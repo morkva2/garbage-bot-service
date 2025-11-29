@@ -574,6 +574,215 @@ def handle_admin_panel(chat_id: int, conn) -> None:
     
     send_message(chat_id, text, keyboard)
 
+def handle_admin_add_operator(chat_id: int) -> None:
+    text = (
+        "👥 <b>Добавить оператора</b>\n\n"
+        "Отправьте Telegram ID пользователя, которого хотите назначить оператором.\n\n"
+        "Формат: <code>operator_add ID</code>\n\n"
+        "<b>Пример:</b>\n"
+        "<code>operator_add 123456789</code>"
+    )
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_admin_stats(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = %s", ('client',))
+    total_clients = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = %s", ('courier',))
+    total_couriers = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM operator_users")
+    total_operators = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM orders")
+    total_orders = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status = %s", ('completed',))
+    completed_orders = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT SUM(price) FROM orders WHERE status = %s", ('completed',))
+    total_revenue = cursor.fetchone()[0] or 0
+    
+    cursor.execute(
+        "SELECT AVG(price) FROM orders WHERE status = %s",
+        ('completed',)
+    )
+    avg_order = cursor.fetchone()[0] or 0
+    
+    cursor.close()
+    
+    text = (
+        "📊 <b>Статистика сервиса</b>\n\n"
+        f"👥 Пользователей:\n"
+        f"  • Клиентов: {total_clients}\n"
+        f"  • Курьеров: {total_couriers}\n"
+        f"  • Операторов: {total_operators}\n\n"
+        f"📦 Заказов:\n"
+        f"  • Всего: {total_orders}\n"
+        f"  • Завершено: {completed_orders}\n\n"
+        f"💰 Финансы:\n"
+        f"  • Общая выручка: {int(total_revenue)} ₽\n"
+        f"  • Средний чек: {int(avg_order)} ₽"
+    )
+    
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_add_operator(chat_id: int, admin_id: int, operator_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT telegram_id FROM users WHERE telegram_id = %s", (operator_id,))
+    user_exists = cursor.fetchone()
+    
+    if not user_exists:
+        cursor.close()
+        send_message(chat_id, "❌ Пользователь не найден. Попросите его сначала запустить бота через /start")
+        return
+    
+    cursor.execute(
+        "INSERT INTO operator_users (telegram_id, added_by) VALUES (%s, %s) ON CONFLICT (telegram_id) DO NOTHING",
+        (operator_id, admin_id)
+    )
+    conn.commit()
+    cursor.close()
+    
+    send_message(operator_id, "✅ Вы назначены оператором! Используйте /start для доступа к панели оператора.")
+    send_message(chat_id, f"✅ Пользователь {operator_id} назначен оператором")
+
+def handle_client_history(chat_id: int, telegram_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT o.id, o.address, o.description, o.price, o.detailed_status, u.first_name "
+        "FROM orders o "
+        "LEFT JOIN users u ON o.courier_id = u.telegram_id "
+        "WHERE o.client_id = %s AND o.status = %s "
+        "ORDER BY o.completed_at DESC LIMIT 10",
+        (telegram_id, 'completed')
+    )
+    orders = cursor.fetchall()
+    cursor.close()
+    
+    if not orders:
+        text = "📊 <b>История заказов</b>\n\nНет завершённых заказов"
+    else:
+        text = "📊 <b>История заказов</b>\n\n"
+        for order in orders:
+            order_id, address, description, price, detailed_status, courier_name = order
+            text += f"🆔 Заказ #{order_id}\n"
+            text += f"📍 {address}\n"
+            text += f"📝 {description}\n"
+            text += f"💰 {price} ₽\n"
+            if courier_name:
+                text += f"Курьер: {courier_name}\n"
+            text += "\n"
+    
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_courier_history(chat_id: int, telegram_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, address, description, price FROM orders "
+        "WHERE courier_id = %s AND status = %s "
+        "ORDER BY completed_at DESC LIMIT 10",
+        (telegram_id, 'completed')
+    )
+    orders = cursor.fetchall()
+    cursor.close()
+    
+    if not orders:
+        text = "📊 <b>История заказов</b>\n\nНет завершённых заказов"
+    else:
+        text = "📊 <b>История заказов</b>\n\n"
+        for order in orders:
+            order_id, address, description, price = order
+            text += f"🆔 Заказ #{order_id}\n"
+            text += f"📍 {address}\n"
+            text += f"📝 {description}\n"
+            text += f"💰 {price} ₽\n\n"
+    
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_client_payment(chat_id: int) -> None:
+    text = (
+        "💳 <b>Способ оплаты</b>\n\n"
+        "Доступные способы оплаты:\n"
+        "• 💳 Банковская карта\n"
+        "• 💵 Наличные курьеру\n"
+        "• 📱 СБП\n\n"
+        "Способ оплаты выбирается при согласовании заказа с курьером."
+    )
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_client_subscription(chat_id: int) -> None:
+    text = (
+        "⭐ <b>Подписка</b>\n\n"
+        "Текущий план: <b>Базовый</b>\n\n"
+        "Преимущества:\n"
+        "• ✅ Без комиссии за первые 3 заказа\n"
+        "• ✅ Приоритетная поддержка\n"
+        "• ✅ Скидки на услуги\n\n"
+        "Для перехода на премиум-план свяжитесь с поддержкой."
+    )
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_courier_withdraw(chat_id: int, telegram_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT total_earnings FROM courier_stats WHERE courier_id = %s",
+        (telegram_id,)
+    )
+    stats = cursor.fetchone()
+    cursor.close()
+    
+    balance = stats[0] if stats else 0
+    
+    text = (
+        "💵 <b>Вывод средств</b>\n\n"
+        f"Доступно для вывода: <b>{balance} ₽</b>\n\n"
+        "Для вывода средств свяжитесь с администратором через кнопку ниже."
+    )
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '💬 Связаться с администратором', 'url': 'https://t.me/support'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'start'}]
+        ]
+    }
+    send_message(chat_id, text, keyboard)
+
+def handle_operator_stats(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status = %s", ('pending',))
+    pending = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status = %s", ('accepted',))
+    active = cursor.fetchone()[0]
+    
+    cursor.execute(
+        "SELECT COUNT(*) FROM orders WHERE status = %s AND DATE(completed_at) = CURRENT_DATE",
+        ('completed',)
+    )
+    today_completed = cursor.fetchone()[0]
+    
+    cursor.close()
+    
+    text = (
+        "📊 <b>Статистика оператора</b>\n\n"
+        f"🔍 Ожидают курьера: {pending}\n"
+        f"🚚 В работе: {active}\n"
+        f"✅ Завершено сегодня: {today_completed}"
+    )
+    
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
+    send_message(chat_id, text, keyboard)
+
 def handle_admin_courier_applications(chat_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
@@ -722,6 +931,28 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data == 'admin_all_orders':
         if role == 'admin':
             handle_admin_all_orders(chat_id, conn)
+    elif data == 'admin_add_operator':
+        if role == 'admin':
+            handle_admin_add_operator(chat_id)
+    elif data == 'admin_stats':
+        if role == 'admin':
+            handle_admin_stats(chat_id, conn)
+    elif data == 'client_history':
+        handle_client_history(chat_id, telegram_id, conn)
+    elif data == 'courier_history':
+        handle_courier_history(chat_id, telegram_id, conn)
+    elif data == 'client_payment':
+        handle_client_payment(chat_id)
+    elif data == 'client_subscription':
+        handle_client_subscription(chat_id)
+    elif data == 'courier_withdraw':
+        handle_courier_withdraw(chat_id, telegram_id, conn)
+    elif data == 'operator_stats':
+        if role in ['operator', 'admin']:
+            handle_operator_stats(chat_id, conn)
+    elif data == 'operator_chats':
+        if role in ['operator', 'admin']:
+            send_message(chat_id, "💬 Функция чата в разработке")
     elif data.startswith('accept_order_'):
         order_id = int(data.split('_')[2])
         handle_accept_order(chat_id, telegram_id, order_id, conn)
@@ -759,6 +990,16 @@ def handle_message(message: Dict, conn) -> None:
     
     if text == '/start':
         handle_start(chat_id, telegram_id, username, first_name, conn)
+        return
+    
+    if text.startswith('operator_add '):
+        role = check_user_role(telegram_id, conn)
+        if role == 'admin':
+            try:
+                operator_id = int(text.split(' ')[1])
+                handle_add_operator(chat_id, telegram_id, operator_id, conn)
+            except (ValueError, IndexError):
+                send_message(chat_id, "❌ Неверный формат. Используйте: operator_add ID")
         return
     
     lines = text.strip().split('\n')
