@@ -574,8 +574,8 @@ def handle_admin_panel(chat_id: int, conn) -> None:
     
     keyboard = {
         'inline_keyboard': [
-            [{'text': '👔 Заявки курьеров', 'callback_data': 'admin_courier_applications'}],
-            [{'text': '👥 Добавить оператора', 'callback_data': 'admin_add_operator'}],
+            [{'text': '👔 Управление курьерами', 'callback_data': 'admin_couriers'}],
+            [{'text': '👥 Управление операторами', 'callback_data': 'admin_operators'}],
             [{'text': '📊 Статистика сервиса', 'callback_data': 'admin_stats'}],
             [{'text': '📦 Все заказы', 'callback_data': 'admin_all_orders'}],
             [{'text': '⬅️ Назад', 'callback_data': 'start'}]
@@ -584,15 +584,70 @@ def handle_admin_panel(chat_id: int, conn) -> None:
     
     send_message(chat_id, text, keyboard)
 
+def handle_admin_couriers_menu(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = %s", ('courier',))
+    total_couriers = cursor.fetchone()[0]
+    
+    cursor.execute(
+        "SELECT COUNT(*) FROM courier_applications WHERE status = %s",
+        ('pending',)
+    )
+    pending_applications = cursor.fetchone()[0]
+    
+    cursor.close()
+    
+    text = (
+        "👔 <b>Управление курьерами</b>\n\n"
+        f"Всего курьеров: {total_couriers}\n"
+        f"Заявок на рассмотрении: {pending_applications}"
+    )
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '📝 Заявки на роль курьера', 'callback_data': 'admin_courier_applications'}],
+            [{'text': '👔 Список всех курьеров', 'callback_data': 'admin_couriers_list'}],
+            [{'text': '🚫 Удалить курьера', 'callback_data': 'admin_remove_courier'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]
+        ]
+    }
+    
+    send_message(chat_id, text, keyboard)
+
+def handle_admin_operators_menu(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM operator_users")
+    total_operators = cursor.fetchone()[0]
+    
+    cursor.close()
+    
+    text = (
+        "👥 <b>Управление операторами</b>\n\n"
+        f"Всего операторов: {total_operators}"
+    )
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '➕ Добавить оператора', 'callback_data': 'admin_add_operator'}],
+            [{'text': '👥 Список всех операторов', 'callback_data': 'admin_operators_list'}],
+            [{'text': '🚫 Удалить оператора', 'callback_data': 'admin_remove_operator'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]
+        ]
+    }
+    
+    send_message(chat_id, text, keyboard)
+
 def handle_admin_add_operator(chat_id: int) -> None:
     text = (
-        "👥 <b>Добавить оператора</b>\n\n"
+        "➕ <b>Добавить оператора</b>\n\n"
         "Отправьте Telegram ID пользователя, которого хотите назначить оператором.\n\n"
         "Формат: <code>operator_add ID</code>\n\n"
         "<b>Пример:</b>\n"
         "<code>operator_add 123456789</code>"
     )
-    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]]}
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_operators'}]]}
     send_message(chat_id, text, keyboard)
 
 def handle_admin_stats(chat_id: int, conn) -> None:
@@ -640,6 +695,127 @@ def handle_admin_stats(chat_id: int, conn) -> None:
     
     keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]]}
     send_message(chat_id, text, keyboard)
+
+def handle_admin_couriers_list(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT u.telegram_id, u.username, u.first_name, cs.total_orders, cs.total_earnings "
+        "FROM users u "
+        "LEFT JOIN courier_stats cs ON u.telegram_id = cs.courier_id "
+        "WHERE u.role = %s "
+        "ORDER BY cs.total_orders DESC NULLS LAST LIMIT 20",
+        ('courier',)
+    )
+    couriers = cursor.fetchall()
+    cursor.close()
+    
+    if not couriers:
+        text = "👔 <b>Список курьеров</b>\n\nНет зарегистрированных курьеров"
+    else:
+        text = "👔 <b>Список курьеров</b>\n\n"
+        for courier in couriers:
+            telegram_id, username, first_name, total_orders, total_earnings = courier
+            orders = total_orders or 0
+            earnings = total_earnings or 0
+            text += f"👤 {first_name} (@{username or 'нет'})\n"
+            text += f"ID: {telegram_id}\n"
+            text += f"Заказов: {orders} | Заработано: {earnings} ₽\n\n"
+    
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_couriers'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_admin_operators_list(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT u.telegram_id, u.username, u.first_name, ou.created_at "
+        "FROM operator_users ou "
+        "JOIN users u ON ou.telegram_id = u.telegram_id "
+        "ORDER BY ou.created_at DESC"
+    )
+    operators = cursor.fetchall()
+    cursor.close()
+    
+    if not operators:
+        text = "👥 <b>Список операторов</b>\n\nНет назначенных операторов"
+    else:
+        text = "👥 <b>Список операторов</b>\n\n"
+        for operator in operators:
+            telegram_id, username, first_name, created_at = operator
+            date_str = created_at.strftime("%d.%m.%Y")
+            text += f"👤 {first_name} (@{username or 'нет'})\n"
+            text += f"ID: {telegram_id}\n"
+            text += f"Назначен: {date_str}\n\n"
+    
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_operators'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_admin_remove_courier_prompt(chat_id: int) -> None:
+    text = (
+        "🚫 <b>Удалить курьера</b>\n\n"
+        "Отправьте Telegram ID курьера, которого хотите удалить.\n\n"
+        "Формат: <code>courier_remove ID</code>\n\n"
+        "<b>Пример:</b>\n"
+        "<code>courier_remove 123456789</code>\n\n"
+        "⚠️ Курьер потеряет доступ к заказам и будет переведён в статус клиента."
+    )
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_couriers'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_admin_remove_operator_prompt(chat_id: int) -> None:
+    text = (
+        "🚫 <b>Удалить оператора</b>\n\n"
+        "Отправьте Telegram ID оператора, которого хотите удалить.\n\n"
+        "Формат: <code>operator_remove ID</code>\n\n"
+        "<b>Пример:</b>\n"
+        "<code>operator_remove 123456789</code>\n\n"
+        "⚠️ Оператор потеряет доступ к панели управления заказами."
+    )
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_operators'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_remove_courier(chat_id: int, courier_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT role FROM users WHERE telegram_id = %s", (courier_id,))
+    user = cursor.fetchone()
+    
+    if not user:
+        cursor.close()
+        send_message(chat_id, "❌ Пользователь не найден")
+        return
+    
+    if user[0] != 'courier':
+        cursor.close()
+        send_message(chat_id, "❌ Этот пользователь не является курьером")
+        return
+    
+    cursor.execute(
+        "UPDATE users SET role = %s WHERE telegram_id = %s",
+        ('client', courier_id)
+    )
+    conn.commit()
+    cursor.close()
+    
+    send_message(courier_id, "❌ Вы больше не являетесь курьером. Статус изменён на клиента.")
+    send_message(chat_id, f"✅ Курьер {courier_id} удалён и переведён в статус клиента")
+
+def handle_remove_operator(chat_id: int, operator_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT 1 FROM operator_users WHERE telegram_id = %s", (operator_id,))
+    operator_exists = cursor.fetchone()
+    
+    if not operator_exists:
+        cursor.close()
+        send_message(chat_id, "❌ Этот пользователь не является оператором")
+        return
+    
+    cursor.execute("DELETE FROM operator_users WHERE telegram_id = %s", (operator_id,))
+    conn.commit()
+    cursor.close()
+    
+    send_message(operator_id, "❌ Вы больше не являетесь оператором. Доступ к панели оператора отключён.")
+    send_message(chat_id, f"✅ Оператор {operator_id} удалён")
 
 def handle_add_operator(chat_id: int, admin_id: int, operator_id: int, conn) -> None:
     cursor = conn.cursor()
@@ -1024,7 +1200,7 @@ def handle_admin_courier_applications(chat_id: int, conn) -> None:
                 {'text': f'❌ Отклонить', 'callback_data': f'reject_courier_{telegram_id}'}
             ])
         
-        keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}])
+        keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'admin_couriers'}])
         keyboard = {'inline_keyboard': keyboard_buttons}
     
     send_message(chat_id, text, keyboard)
@@ -1136,9 +1312,27 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data == 'admin_panel':
         if role == 'admin':
             handle_admin_panel(chat_id, conn)
+    elif data == 'admin_couriers':
+        if role == 'admin':
+            handle_admin_couriers_menu(chat_id, conn)
+    elif data == 'admin_operators':
+        if role == 'admin':
+            handle_admin_operators_menu(chat_id, conn)
     elif data == 'admin_courier_applications':
         if role == 'admin':
             handle_admin_courier_applications(chat_id, conn)
+    elif data == 'admin_couriers_list':
+        if role == 'admin':
+            handle_admin_couriers_list(chat_id, conn)
+    elif data == 'admin_operators_list':
+        if role == 'admin':
+            handle_admin_operators_list(chat_id, conn)
+    elif data == 'admin_remove_courier':
+        if role == 'admin':
+            handle_admin_remove_courier_prompt(chat_id)
+    elif data == 'admin_remove_operator':
+        if role == 'admin':
+            handle_admin_remove_operator_prompt(chat_id)
     elif data == 'admin_all_orders':
         if role == 'admin':
             handle_admin_all_orders(chat_id, conn)
@@ -1213,14 +1407,33 @@ def handle_message(message: Dict, conn) -> None:
         handle_start(chat_id, telegram_id, username, first_name, conn)
         return
     
+    role = check_user_role(telegram_id, conn)
+    
     if text.startswith('operator_add '):
-        role = check_user_role(telegram_id, conn)
         if role == 'admin':
             try:
                 operator_id = int(text.split(' ')[1])
                 handle_add_operator(chat_id, telegram_id, operator_id, conn)
             except (ValueError, IndexError):
                 send_message(chat_id, "❌ Неверный формат. Используйте: operator_add ID")
+        return
+    
+    if text.startswith('operator_remove '):
+        if role == 'admin':
+            try:
+                operator_id = int(text.split(' ')[1])
+                handle_remove_operator(chat_id, operator_id, conn)
+            except (ValueError, IndexError):
+                send_message(chat_id, "❌ Неверный формат. Используйте: operator_remove ID")
+        return
+    
+    if text.startswith('courier_remove '):
+        if role == 'admin':
+            try:
+                courier_id = int(text.split(' ')[1])
+                handle_remove_courier(chat_id, courier_id, conn)
+            except (ValueError, IndexError):
+                send_message(chat_id, "❌ Неверный формат. Используйте: courier_remove ID")
         return
     
     if text.startswith('chat_'):
