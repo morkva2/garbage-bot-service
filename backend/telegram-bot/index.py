@@ -1,5 +1,5 @@
 """
-Business: Telegram bot for garbage collection courier service
+Business: Telegram bot for garbage collection courier service with roles
 Args: event - webhook from Telegram with updates
       context - cloud function context with request_id
 Returns: HTTP response with statusCode 200
@@ -12,6 +12,14 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
+
+ORDER_STATUSES = {
+    'searching_courier': '🔍 В поиске курьера',
+    'courier_on_way': '🚗 Курьер едет',
+    'courier_working': '🛠 Курьер выполняет заказ',
+    'completed': '✅ Завершён',
+    'cancelled': '❌ Отменён'
+}
 
 def get_db_connection():
     database_url = os.environ.get('DATABASE_URL')
@@ -38,15 +46,55 @@ def send_message(chat_id: int, text: str, reply_markup: Optional[Dict] = None) -
     )
     urllib.request.urlopen(req)
 
-def get_main_menu_keyboard() -> Dict:
-    return {
-        'inline_keyboard': [
-            [{'text': '👔 Стать курьером', 'callback_data': 'become_courier'}],
-            [{'text': '👤 Для клиентов', 'callback_data': 'client_menu'}],
-            [{'text': '⭐ Отзывы', 'callback_data': 'reviews'}],
-            [{'text': '💬 Поддержка', 'url': 'https://t.me/support'}]
-        ]
-    }
+def check_user_role(telegram_id: int, conn) -> str:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT 1 FROM admin_users WHERE telegram_id = %s", (telegram_id,))
+    if cursor.fetchone():
+        cursor.close()
+        return 'admin'
+    
+    cursor.execute("SELECT 1 FROM operator_users WHERE telegram_id = %s", (telegram_id,))
+    if cursor.fetchone():
+        cursor.close()
+        return 'operator'
+    
+    cursor.execute("SELECT role FROM users WHERE telegram_id = %s", (telegram_id,))
+    user = cursor.fetchone()
+    cursor.close()
+    
+    return user[0] if user else 'client'
+
+def get_main_menu_keyboard(role: str) -> Dict:
+    if role == 'admin':
+        return {
+            'inline_keyboard': [
+                [{'text': '👑 Админ-панель', 'callback_data': 'admin_panel'}],
+                [{'text': '📊 Статистика сервиса', 'callback_data': 'admin_stats'}],
+                [{'text': '👔 Управление курьерами', 'callback_data': 'admin_couriers'}],
+                [{'text': '👥 Управление операторами', 'callback_data': 'admin_operators'}],
+                [{'text': '📦 Все заказы', 'callback_data': 'admin_all_orders'}]
+            ]
+        }
+    elif role == 'operator':
+        return {
+            'inline_keyboard': [
+                [{'text': '📞 Активные заказы', 'callback_data': 'operator_active_orders'}],
+                [{'text': '💬 Чаты заказов', 'callback_data': 'operator_chats'}],
+                [{'text': '📊 Статистика', 'callback_data': 'operator_stats'}]
+            ]
+        }
+    elif role == 'courier':
+        return get_courier_menu_keyboard()
+    else:
+        return {
+            'inline_keyboard': [
+                [{'text': '👔 Стать курьером', 'callback_data': 'apply_courier'}],
+                [{'text': '👤 Для клиентов', 'callback_data': 'client_menu'}],
+                [{'text': '⭐ Отзывы', 'callback_data': 'reviews'}],
+                [{'text': '💬 Поддержка', 'url': 'https://t.me/support'}]
+            ]
+        }
 
 def get_courier_menu_keyboard() -> Dict:
     return {
@@ -109,44 +157,61 @@ def get_or_create_user(telegram_id: int, username: str, first_name: str, conn) -
 
 def handle_start(chat_id: int, telegram_id: int, username: str, first_name: str, conn) -> None:
     get_or_create_user(telegram_id, username, first_name, conn)
+    role = check_user_role(telegram_id, conn)
     
-    welcome_text = (
-        "🚚 <b>Курьерская служба «Экономь время»</b>\n\n"
-        "Добро пожаловать! Мы предоставляем услуги вывоза мусора.\n\n"
-        "Выберите действие:"
-    )
+    if role == 'admin':
+        welcome_text = "👑 <b>Админ-панель</b>\n\nДобро пожаловать в панель администратора."
+    elif role == 'operator':
+        welcome_text = "📞 <b>Панель оператора</b>\n\nДобро пожаловать в панель оператора."
+    elif role == 'courier':
+        welcome_text = "👔 <b>Меню курьера</b>\n\nВыберите действие:"
+    else:
+        welcome_text = (
+            "🚚 <b>Курьерская служба «Экономь время»</b>\n\n"
+            "Добро пожаловать! Мы предоставляем услуги вывоза мусора.\n\n"
+            "Выберите действие:"
+        )
     
-    send_message(chat_id, welcome_text, get_main_menu_keyboard())
+    send_message(chat_id, welcome_text, get_main_menu_keyboard(role))
 
-def handle_become_courier(chat_id: int, telegram_id: int, conn) -> None:
+def handle_apply_courier(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
+    
     cursor.execute(
-        "UPDATE users SET role = %s WHERE telegram_id = %s",
-        ('courier', telegram_id)
+        "SELECT status FROM courier_applications WHERE telegram_id = %s ORDER BY created_at DESC LIMIT 1",
+        (telegram_id,)
+    )
+    existing = cursor.fetchone()
+    
+    if existing and existing[0] == 'pending':
+        text = "⏳ Ваша заявка на рассмотрении. Ожидайте одобрения администратора."
+        cursor.close()
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
+        send_message(chat_id, text, keyboard)
+        return
+    
+    cursor.execute(
+        "INSERT INTO courier_applications (telegram_id, status) VALUES (%s, %s)",
+        (telegram_id, 'pending')
     )
     conn.commit()
     cursor.close()
     
     text = (
-        "👔 <b>Вы стали курьером!</b>\n\n"
-        "Теперь вы можете принимать заказы на вывоз мусора.\n"
-        "Выберите действие:"
+        "✅ Заявка на роль курьера отправлена!\n\n"
+        "Администратор рассмотрит её в ближайшее время."
     )
-    
-    send_message(chat_id, text, get_courier_menu_keyboard())
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
+    send_message(chat_id, text, keyboard)
 
 def handle_client_menu(chat_id: int) -> None:
-    text = (
-        "👤 <b>Меню клиента</b>\n\n"
-        "Выберите действие:"
-    )
-    
+    text = "👤 <b>Меню клиента</b>\n\nВыберите действие:"
     send_message(chat_id, text, get_client_menu_keyboard())
 
 def handle_courier_available_orders(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, address, description, price FROM orders WHERE status = %s ORDER BY created_at DESC LIMIT 10",
+        "SELECT id, address, description, price, detailed_status FROM orders WHERE status = %s ORDER BY created_at DESC LIMIT 10",
         ('pending',)
     )
     orders = cursor.fetchall()
@@ -154,9 +219,7 @@ def handle_courier_available_orders(chat_id: int, telegram_id: int, conn) -> Non
     
     if not orders:
         text = "📦 <b>Доступные заказы</b>\n\nНет доступных заказов"
-        keyboard = {
-            'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}]]
-        }
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
         send_message(chat_id, text, keyboard)
         return
     
@@ -164,24 +227,22 @@ def handle_courier_available_orders(chat_id: int, telegram_id: int, conn) -> Non
     keyboard_buttons = []
     
     for order in orders:
-        order_id, address, description, price = order
+        order_id, address, description, price, detailed_status = order
+        status_text = ORDER_STATUSES.get(detailed_status, detailed_status)
         text += f"🆔 Заказ #{order_id}\n"
         text += f"📍 {address}\n"
         text += f"📝 {description}\n"
-        text += f"💰 {price} ₽\n\n"
+        text += f"💰 {price} ₽\n"
+        text += f"Статус: {status_text}\n\n"
         keyboard_buttons.append([{'text': f'✅ Принять #{order_id}', 'callback_data': f'accept_order_{order_id}'}])
     
-    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}])
-    
+    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'start'}])
     send_message(chat_id, text, {'inline_keyboard': keyboard_buttons})
 
 def handle_accept_order(chat_id: int, telegram_id: int, order_id: int, conn) -> None:
     cursor = conn.cursor()
     
-    cursor.execute(
-        "SELECT status FROM orders WHERE id = %s",
-        (order_id,)
-    )
+    cursor.execute("SELECT status FROM orders WHERE id = %s", (order_id,))
     order = cursor.fetchone()
     
     if not order or order[0] != 'pending':
@@ -190,17 +251,17 @@ def handle_accept_order(chat_id: int, telegram_id: int, order_id: int, conn) -> 
         return
     
     cursor.execute(
-        "UPDATE orders SET status = %s, courier_id = %s, accepted_at = %s WHERE id = %s",
-        ('accepted', telegram_id, datetime.now(), order_id)
+        "UPDATE orders SET status = %s, courier_id = %s, accepted_at = %s, detailed_status = %s WHERE id = %s",
+        ('accepted', telegram_id, datetime.now(), 'courier_on_way', order_id)
     )
     conn.commit()
     cursor.close()
     
-    text = f"✅ Заказ #{order_id} принят!\n\nТеперь он в разделе «Текущие заказы»"
+    text = f"✅ Заказ #{order_id} принят!\n\nСтатус: 🚗 Курьер едет"
     keyboard = {
         'inline_keyboard': [
             [{'text': '🚚 Текущие заказы', 'callback_data': 'courier_current'}],
-            [{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}]
+            [{'text': '⬅️ Назад', 'callback_data': 'start'}]
         ]
     }
     send_message(chat_id, text, keyboard)
@@ -208,7 +269,7 @@ def handle_accept_order(chat_id: int, telegram_id: int, order_id: int, conn) -> 
 def handle_courier_current_orders(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, address, description, price FROM orders WHERE courier_id = %s AND status = %s ORDER BY accepted_at DESC",
+        "SELECT id, address, description, price, detailed_status FROM orders WHERE courier_id = %s AND status = %s ORDER BY accepted_at DESC",
         (telegram_id, 'accepted')
     )
     orders = cursor.fetchall()
@@ -216,9 +277,7 @@ def handle_courier_current_orders(chat_id: int, telegram_id: int, conn) -> None:
     
     if not orders:
         text = "🚚 <b>Текущие заказы</b>\n\nНет текущих заказов"
-        keyboard = {
-            'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}]]
-        }
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
         send_message(chat_id, text, keyboard)
         return
     
@@ -226,24 +285,44 @@ def handle_courier_current_orders(chat_id: int, telegram_id: int, conn) -> None:
     keyboard_buttons = []
     
     for order in orders:
-        order_id, address, description, price = order
+        order_id, address, description, price, detailed_status = order
+        status_text = ORDER_STATUSES.get(detailed_status, detailed_status)
         text += f"🆔 Заказ #{order_id}\n"
         text += f"📍 {address}\n"
         text += f"📝 {description}\n"
-        text += f"💰 {price} ₽\n\n"
-        keyboard_buttons.append([{'text': f'✅ Завершить #{order_id}', 'callback_data': f'complete_order_{order_id}'}])
+        text += f"💰 {price} ₽\n"
+        text += f"Статус: {status_text}\n\n"
+        
+        if detailed_status == 'courier_on_way':
+            keyboard_buttons.append([{'text': f'🛠 Начать работу #{order_id}', 'callback_data': f'start_work_{order_id}'}])
+        elif detailed_status == 'courier_working':
+            keyboard_buttons.append([{'text': f'✅ Завершить #{order_id}', 'callback_data': f'complete_order_{order_id}'}])
     
-    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}])
-    
+    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'start'}])
     send_message(chat_id, text, {'inline_keyboard': keyboard_buttons})
+
+def handle_start_work(chat_id: int, telegram_id: int, order_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE orders SET detailed_status = %s WHERE id = %s AND courier_id = %s",
+        ('courier_working', order_id, telegram_id)
+    )
+    conn.commit()
+    cursor.close()
+    
+    text = f"🛠 Работа над заказом #{order_id} начата!"
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '✅ Завершить заказ', 'callback_data': f'complete_order_{order_id}'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'courier_current'}]
+        ]
+    }
+    send_message(chat_id, text, keyboard)
 
 def handle_complete_order(chat_id: int, telegram_id: int, order_id: int, conn) -> None:
     cursor = conn.cursor()
     
-    cursor.execute(
-        "SELECT courier_id, price FROM orders WHERE id = %s",
-        (order_id,)
-    )
+    cursor.execute("SELECT courier_id, price FROM orders WHERE id = %s", (order_id,))
     order = cursor.fetchone()
     
     if not order or order[0] != telegram_id:
@@ -254,8 +333,8 @@ def handle_complete_order(chat_id: int, telegram_id: int, order_id: int, conn) -
     price = order[1]
     
     cursor.execute(
-        "UPDATE orders SET status = %s, completed_at = %s WHERE id = %s",
-        ('completed', datetime.now(), order_id)
+        "UPDATE orders SET status = %s, completed_at = %s, detailed_status = %s WHERE id = %s",
+        ('completed', datetime.now(), 'completed', order_id)
     )
     
     cursor.execute(
@@ -275,7 +354,7 @@ def handle_complete_order(chat_id: int, telegram_id: int, order_id: int, conn) -
     keyboard = {
         'inline_keyboard': [
             [{'text': '💰 Статистика', 'callback_data': 'courier_stats'}],
-            [{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}]
+            [{'text': '⬅️ Назад', 'callback_data': 'start'}]
         ]
     }
     send_message(chat_id, text, keyboard)
@@ -288,10 +367,7 @@ def handle_courier_stats(chat_id: int, telegram_id: int, conn) -> None:
     )
     stats = cursor.fetchone()
     
-    cursor.execute(
-        "SELECT AVG(rating) FROM ratings WHERE courier_id = %s",
-        (telegram_id,)
-    )
+    cursor.execute("SELECT AVG(rating) FROM ratings WHERE courier_id = %s", (telegram_id,))
     avg_rating = cursor.fetchone()
     cursor.close()
     
@@ -316,7 +392,7 @@ def handle_courier_stats(chat_id: int, telegram_id: int, conn) -> None:
     keyboard = {
         'inline_keyboard': [
             [{'text': '💵 Вывод средств', 'callback_data': 'courier_withdraw'}],
-            [{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}]
+            [{'text': '⬅️ Назад', 'callback_data': 'start'}]
         ]
     }
     send_message(chat_id, text, keyboard)
@@ -343,9 +419,7 @@ def handle_reviews(chat_id: int, conn) -> None:
                 text += f"💬 {review_text}\n"
             text += "\n"
     
-    keyboard = {
-        'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]
-    }
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
     send_message(chat_id, text, keyboard)
 
 def handle_client_new_order(chat_id: int) -> None:
@@ -361,15 +435,13 @@ def handle_client_new_order(chat_id: int) -> None:
         "1500"
     )
     
-    keyboard = {
-        'inline_keyboard': [[{'text': '⬅️ Отмена', 'callback_data': 'client_menu'}]]
-    }
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Отмена', 'callback_data': 'client_menu'}]]}
     send_message(chat_id, text, keyboard)
 
 def handle_client_active_orders(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT o.id, o.address, o.description, o.price, o.status, u.first_name "
+        "SELECT o.id, o.address, o.description, o.price, o.detailed_status, u.first_name "
         "FROM orders o "
         "LEFT JOIN users u ON o.courier_id = u.telegram_id "
         "WHERE o.client_id = %s AND o.status IN (%s, %s) "
@@ -384,17 +456,231 @@ def handle_client_active_orders(chat_id: int, telegram_id: int, conn) -> None:
     else:
         text = "📦 <b>Активные заказы</b>\n\n"
         for order in orders:
-            order_id, address, description, price, status, courier_name = order
-            status_text = "🔍 В поиске курьера" if status == 'pending' else f"✅ Принят курьером {courier_name}"
+            order_id, address, description, price, detailed_status, courier_name = order
+            status_text = ORDER_STATUSES.get(detailed_status, detailed_status)
             text += f"🆔 Заказ #{order_id}\n"
             text += f"📍 {address}\n"
             text += f"📝 {description}\n"
             text += f"💰 {price} ₽\n"
-            text += f"{status_text}\n\n"
+            text += f"Статус: {status_text}\n"
+            if courier_name:
+                text += f"Курьер: {courier_name}\n"
+            text += "\n"
+    
+    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]}
+    send_message(chat_id, text, keyboard)
+
+def handle_operator_active_orders(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT o.id, o.address, o.description, o.price, o.detailed_status, "
+        "u1.first_name as client_name, u2.first_name as courier_name "
+        "FROM orders o "
+        "JOIN users u1 ON o.client_id = u1.telegram_id "
+        "LEFT JOIN users u2 ON o.courier_id = u2.telegram_id "
+        "WHERE o.status IN (%s, %s) "
+        "ORDER BY o.created_at DESC LIMIT 20",
+        ('pending', 'accepted')
+    )
+    orders = cursor.fetchall()
+    cursor.close()
+    
+    if not orders:
+        text = "📞 <b>Активные заказы</b>\n\nНет активных заказов"
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
+    else:
+        text = "📞 <b>Активные заказы</b>\n\n"
+        keyboard_buttons = []
+        
+        for order in orders:
+            order_id, address, description, price, detailed_status, client_name, courier_name = order
+            status_text = ORDER_STATUSES.get(detailed_status, detailed_status)
+            text += f"🆔 #{order_id} | {status_text}\n"
+            text += f"Клиент: {client_name}\n"
+            if courier_name:
+                text += f"Курьер: {courier_name}\n"
+            text += f"💰 {price} ₽\n\n"
+            
+            keyboard_buttons.append([
+                {'text': f'💬 Чат #{order_id}', 'callback_data': f'operator_chat_{order_id}'},
+                {'text': f'📝 Статус #{order_id}', 'callback_data': f'operator_status_{order_id}'}
+            ])
+        
+        keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'start'}])
+        keyboard = {'inline_keyboard': keyboard_buttons}
+    
+    send_message(chat_id, text, keyboard)
+
+def handle_operator_change_status(chat_id: int, order_id: int, conn) -> None:
+    text = f"📝 Изменить статус заказа #{order_id}"
     
     keyboard = {
-        'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]
+        'inline_keyboard': [
+            [{'text': '🔍 В поиске курьера', 'callback_data': f'set_status_{order_id}_searching_courier'}],
+            [{'text': '🚗 Курьер едет', 'callback_data': f'set_status_{order_id}_courier_on_way'}],
+            [{'text': '🛠 Курьер выполняет заказ', 'callback_data': f'set_status_{order_id}_courier_working'}],
+            [{'text': '✅ Завершён', 'callback_data': f'set_status_{order_id}_completed'}],
+            [{'text': '❌ Отменён', 'callback_data': f'set_status_{order_id}_cancelled'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'operator_active_orders'}]
+        ]
     }
+    
+    send_message(chat_id, text, keyboard)
+
+def handle_set_order_status(chat_id: int, order_id: int, new_status: str, conn) -> None:
+    cursor = conn.cursor()
+    
+    status_mapping = {
+        'completed': 'completed',
+        'cancelled': 'cancelled',
+        'searching_courier': 'pending',
+        'courier_on_way': 'accepted',
+        'courier_working': 'accepted'
+    }
+    
+    main_status = status_mapping.get(new_status, 'pending')
+    
+    cursor.execute(
+        "UPDATE orders SET detailed_status = %s, status = %s WHERE id = %s",
+        (new_status, main_status, order_id)
+    )
+    conn.commit()
+    cursor.close()
+    
+    status_text = ORDER_STATUSES.get(new_status, new_status)
+    text = f"✅ Статус заказа #{order_id} изменён на: {status_text}"
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '📞 Активные заказы', 'callback_data': 'operator_active_orders'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'start'}]
+        ]
+    }
+    
+    send_message(chat_id, text, keyboard)
+
+def handle_admin_panel(chat_id: int, conn) -> None:
+    text = "👑 <b>Админ-панель</b>\n\nВыберите действие:"
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '👔 Заявки курьеров', 'callback_data': 'admin_courier_applications'}],
+            [{'text': '👥 Добавить оператора', 'callback_data': 'admin_add_operator'}],
+            [{'text': '📊 Статистика сервиса', 'callback_data': 'admin_stats'}],
+            [{'text': '📦 Все заказы', 'callback_data': 'admin_all_orders'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'start'}]
+        ]
+    }
+    
+    send_message(chat_id, text, keyboard)
+
+def handle_admin_courier_applications(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT ca.id, ca.telegram_id, u.first_name, u.username "
+        "FROM courier_applications ca "
+        "JOIN users u ON ca.telegram_id = u.telegram_id "
+        "WHERE ca.status = %s "
+        "ORDER BY ca.created_at DESC LIMIT 10",
+        ('pending',)
+    )
+    applications = cursor.fetchall()
+    cursor.close()
+    
+    if not applications:
+        text = "👔 <b>Заявки курьеров</b>\n\nНет новых заявок"
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]]}
+    else:
+        text = "👔 <b>Заявки курьеров</b>\n\n"
+        keyboard_buttons = []
+        
+        for app in applications:
+            app_id, telegram_id, first_name, username = app
+            text += f"👤 {first_name} (@{username or 'нет username'})\n"
+            text += f"ID: {telegram_id}\n\n"
+            
+            keyboard_buttons.append([
+                {'text': f'✅ Одобрить {first_name}', 'callback_data': f'approve_courier_{telegram_id}'},
+                {'text': f'❌ Отклонить', 'callback_data': f'reject_courier_{telegram_id}'}
+            ])
+        
+        keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}])
+        keyboard = {'inline_keyboard': keyboard_buttons}
+    
+    send_message(chat_id, text, keyboard)
+
+def handle_approve_courier(chat_id: int, admin_id: int, courier_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "UPDATE users SET role = %s WHERE telegram_id = %s",
+        ('courier', courier_id)
+    )
+    
+    cursor.execute(
+        "UPDATE courier_applications SET status = %s, reviewed_by = %s, reviewed_at = %s WHERE telegram_id = %s AND status = %s",
+        ('approved', admin_id, datetime.now(), courier_id, 'pending')
+    )
+    
+    conn.commit()
+    cursor.close()
+    
+    send_message(courier_id, "✅ Поздравляем! Ваша заявка на роль курьера одобрена.\n\nИспользуйте /start для доступа к меню курьера.")
+    send_message(chat_id, "✅ Курьер одобрен")
+
+def handle_reject_courier(chat_id: int, admin_id: int, courier_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "UPDATE courier_applications SET status = %s, reviewed_by = %s, reviewed_at = %s WHERE telegram_id = %s AND status = %s",
+        ('rejected', admin_id, datetime.now(), courier_id, 'pending')
+    )
+    
+    conn.commit()
+    cursor.close()
+    
+    send_message(courier_id, "❌ К сожалению, ваша заявка на роль курьера отклонена.")
+    send_message(chat_id, "❌ Заявка отклонена")
+
+def handle_admin_all_orders(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM orders WHERE status = %s",
+        ('pending',)
+    )
+    pending = cursor.fetchone()[0]
+    
+    cursor.execute(
+        "SELECT COUNT(*) FROM orders WHERE status = %s",
+        ('accepted',)
+    )
+    active = cursor.fetchone()[0]
+    
+    cursor.execute(
+        "SELECT COUNT(*) FROM orders WHERE status = %s",
+        ('completed',)
+    )
+    completed = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT SUM(price) FROM orders WHERE status = %s", ('completed',))
+    total_revenue = cursor.fetchone()[0] or 0
+    
+    cursor.close()
+    
+    text = (
+        "📦 <b>Все заказы</b>\n\n"
+        f"🔍 В ожидании: {pending}\n"
+        f"🚚 В работе: {active}\n"
+        f"✅ Завершено: {completed}\n\n"
+        f"💰 Общая выручка: {total_revenue} ₽"
+    )
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]
+        ]
+    }
+    
     send_message(chat_id, text, keyboard)
 
 def handle_callback_query(callback_query: Dict, conn) -> None:
@@ -404,15 +690,14 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     first_name = callback_query['from'].get('first_name', '')
     data = callback_query['data']
     
+    role = check_user_role(telegram_id, conn)
+    
     if data == 'start':
         handle_start(chat_id, telegram_id, username, first_name, conn)
-    elif data == 'become_courier':
-        handle_become_courier(chat_id, telegram_id, conn)
+    elif data == 'apply_courier':
+        handle_apply_courier(chat_id, telegram_id, conn)
     elif data == 'client_menu':
         handle_client_menu(chat_id)
-    elif data == 'courier_menu':
-        text = "👔 <b>Меню курьера</b>\n\nВыберите действие:"
-        send_message(chat_id, text, get_courier_menu_keyboard())
     elif data == 'courier_available':
         handle_courier_available_orders(chat_id, telegram_id, conn)
     elif data == 'courier_current':
@@ -425,12 +710,45 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
         handle_client_new_order(chat_id)
     elif data == 'client_active':
         handle_client_active_orders(chat_id, telegram_id, conn)
+    elif data == 'operator_active_orders':
+        if role in ['operator', 'admin']:
+            handle_operator_active_orders(chat_id, conn)
+    elif data == 'admin_panel':
+        if role == 'admin':
+            handle_admin_panel(chat_id, conn)
+    elif data == 'admin_courier_applications':
+        if role == 'admin':
+            handle_admin_courier_applications(chat_id, conn)
+    elif data == 'admin_all_orders':
+        if role == 'admin':
+            handle_admin_all_orders(chat_id, conn)
     elif data.startswith('accept_order_'):
         order_id = int(data.split('_')[2])
         handle_accept_order(chat_id, telegram_id, order_id, conn)
+    elif data.startswith('start_work_'):
+        order_id = int(data.split('_')[2])
+        handle_start_work(chat_id, telegram_id, order_id, conn)
     elif data.startswith('complete_order_'):
         order_id = int(data.split('_')[2])
         handle_complete_order(chat_id, telegram_id, order_id, conn)
+    elif data.startswith('operator_status_'):
+        if role in ['operator', 'admin']:
+            order_id = int(data.split('_')[2])
+            handle_operator_change_status(chat_id, order_id, conn)
+    elif data.startswith('set_status_'):
+        if role in ['operator', 'admin']:
+            parts = data.split('_')
+            order_id = int(parts[2])
+            new_status = '_'.join(parts[3:])
+            handle_set_order_status(chat_id, order_id, new_status, conn)
+    elif data.startswith('approve_courier_'):
+        if role == 'admin':
+            courier_id = int(data.split('_')[2])
+            handle_approve_courier(chat_id, telegram_id, courier_id, conn)
+    elif data.startswith('reject_courier_'):
+        if role == 'admin':
+            courier_id = int(data.split('_')[2])
+            handle_reject_courier(chat_id, telegram_id, courier_id, conn)
 
 def handle_message(message: Dict, conn) -> None:
     chat_id = message['chat']['id']
@@ -452,9 +770,9 @@ def handle_message(message: Dict, conn) -> None:
             
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO orders (client_id, address, description, price, status) "
-                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (telegram_id, address, description, price, 'pending')
+                "INSERT INTO orders (client_id, address, description, price, status, detailed_status) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (telegram_id, address, description, price, 'pending', 'searching_courier')
             )
             order_id = cursor.fetchone()[0]
             conn.commit()
@@ -465,7 +783,7 @@ def handle_message(message: Dict, conn) -> None:
                 f"📍 {address}\n"
                 f"📝 {description}\n"
                 f"💰 {price} ₽\n\n"
-                "Ожидайте, курьер скоро примет заказ."
+                "🔍 Статус: В поиске курьера"
             )
             keyboard = {
                 'inline_keyboard': [
