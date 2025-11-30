@@ -1158,7 +1158,7 @@ def handle_operator_chats(chat_id: int, conn) -> None:
         keyboard_buttons = []
         
         for order in orders:
-            order_id, address, client_name, courier_name, msg_count = order
+            order_id, address, client_name, courier_name, msg_count, created_at = order
             text += f"🆔 Заказ #{order_id}\n"
             text += f"👤 Клиент: {client_name}\n"
             text += f"👔 Курьер: {courier_name or 'не назначен'}\n"
