@@ -1226,12 +1226,24 @@ def handle_view_chat(chat_id: int, order_id: int, conn) -> None:
             
             text += f"{icon} <b>{sender_name}</b> ({time_str}):\n{message_text}\n\n"
     
+    text += "\n\n💡 <b>Просто ответьте на это сообщение</b>, чтобы написать в чат как оператор"
+    
     keyboard = {
         'inline_keyboard': [
             [{'text': '🔄 Обновить', 'callback_data': f'view_chat_{order_id}'}],
             [{'text': '⬅️ Назад', 'callback_data': 'operator_chats'}]
         ]
     }
+    
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO chat_sessions (telegram_id, order_id, updated_at) "
+        "VALUES (%s, %s, %s) "
+        "ON CONFLICT (telegram_id) DO UPDATE SET order_id = %s, updated_at = %s",
+        (chat_id, order_id, datetime.now(), order_id, datetime.now())
+    )
+    conn.commit()
+    cursor.close()
     
     smart_send_message(chat_id, text, keyboard)
 
@@ -1251,7 +1263,10 @@ def handle_send_chat_message(chat_id: int, telegram_id: int, order_id: int, mess
     
     client_id, courier_id = order
     
-    if telegram_id != client_id and telegram_id != courier_id:
+    role = check_user_role(telegram_id, conn)
+    is_operator = role in ['operator', 'admin']
+    
+    if not is_operator and telegram_id != client_id and telegram_id != courier_id:
         cursor.close()
         send_message(chat_id, "❌ Вы не участник этого заказа")
         return
@@ -1268,20 +1283,39 @@ def handle_send_chat_message(chat_id: int, telegram_id: int, order_id: int, mess
     
     cursor.close()
     
-    recipient_id = courier_id if telegram_id == client_id else client_id
-    
-    if recipient_id:
-        role_text = "курьера" if telegram_id == courier_id else "клиента"
-        recipient_type = "client" if recipient_id == client_id else "courier"
-        keyboard = {
-            'inline_keyboard': [
-                [{'text': '💬 Открыть чат', 'callback_data': f'{recipient_type}_chat_{order_id}'}]
-            ]
-        }
-        send_message(recipient_id, f"💬 <b>Новое сообщение от {role_text}</b>\n\n🆔 Заказ #{order_id}\n👤 {sender_name}:\n{message_text}", keyboard)
-    
-    user_type = 'client' if telegram_id == client_id else 'courier'
-    handle_open_chat(chat_id, telegram_id, order_id, user_type, conn)
+    if is_operator:
+        if client_id:
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '💬 Открыть чат', 'callback_data': f'client_chat_{order_id}'}]
+                ]
+            }
+            send_message(client_id, f"⚙️ <b>Сообщение от оператора</b>\n\n🆔 Заказ #{order_id}\n👤 {sender_name}:\n{message_text}", keyboard)
+        
+        if courier_id:
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '💬 Открыть чат', 'callback_data': f'courier_chat_{order_id}'}]
+                ]
+            }
+            send_message(courier_id, f"⚙️ <b>Сообщение от оператора</b>\n\n🆔 Заказ #{order_id}\n👤 {sender_name}:\n{message_text}", keyboard)
+        
+        handle_view_chat(chat_id, order_id, conn)
+    else:
+        recipient_id = courier_id if telegram_id == client_id else client_id
+        
+        if recipient_id:
+            role_text = "курьера" if telegram_id == courier_id else "клиента"
+            recipient_type = "client" if recipient_id == client_id else "courier"
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '💬 Открыть чат', 'callback_data': f'{recipient_type}_chat_{order_id}'}]
+                ]
+            }
+            send_message(recipient_id, f"💬 <b>Новое сообщение от {role_text}</b>\n\n🆔 Заказ #{order_id}\n👤 {sender_name}:\n{message_text}", keyboard)
+        
+        user_type = 'client' if telegram_id == client_id else 'courier'
+        handle_open_chat(chat_id, telegram_id, order_id, user_type, conn)
 
 def handle_open_chat(chat_id: int, telegram_id: int, order_id: int, user_type: str, conn) -> None:
     cursor = conn.cursor()
