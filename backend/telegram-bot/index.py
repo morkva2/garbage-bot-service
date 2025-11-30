@@ -586,12 +586,64 @@ def handle_client_active_orders(chat_id: int, telegram_id: int, conn) -> None:
                 text += f"Курьер: {courier_name}\n"
             text += "\n"
             
+            order_buttons = []
             if courier_id:
-                keyboard_buttons.append([{'text': f'💬 Чат с курьером #{order_id}', 'callback_data': f'client_chat_{order_id}'}])
+                order_buttons.append({'text': f'💬 Чат', 'callback_data': f'client_chat_{order_id}'})
+            
+            if detailed_status == 'searching_courier':
+                order_buttons.append({'text': f'❌ Отменить', 'callback_data': f'cancel_order_{order_id}'})
+            
+            if order_buttons:
+                keyboard_buttons.append(order_buttons)
         
         keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'client_menu'}])
         keyboard = {'inline_keyboard': keyboard_buttons}
     
+    smart_send_message(chat_id, text, keyboard)
+
+def handle_cancel_order(chat_id: int, telegram_id: int, order_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT client_id, status, detailed_status FROM orders WHERE id = %s",
+        (order_id,)
+    )
+    order = cursor.fetchone()
+    
+    if not order:
+        cursor.close()
+        send_message(chat_id, "❌ Заказ не найден")
+        return
+    
+    client_id, status, detailed_status = order
+    
+    if client_id != telegram_id:
+        cursor.close()
+        send_message(chat_id, "❌ Это не ваш заказ")
+        return
+    
+    if status != 'pending' or detailed_status != 'searching_courier':
+        cursor.close()
+        send_message(chat_id, "❌ Заказ уже принят курьером и не может быть отменен")
+        return
+    
+    cursor.execute(
+        "UPDATE orders SET status = %s, detailed_status = %s WHERE id = %s",
+        ('cancelled', 'cancelled', order_id)
+    )
+    
+    cursor.execute("DELETE FROM chat_sessions WHERE order_id = %s", (order_id,))
+    
+    conn.commit()
+    cursor.close()
+    
+    text = f"❌ <b>Заказ #{order_id} отменен</b>\n\nВы можете создать новый заказ в любое время"
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '➕ Новый заказ', 'callback_data': 'client_new_order'}],
+            [{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]
+        ]
+    }
     smart_send_message(chat_id, text, keyboard)
 
 def handle_operator_active_orders(chat_id: int, conn) -> None:
@@ -1533,6 +1585,9 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data.startswith('courier_chat_'):
         order_id = int(data.split('_')[2])
         handle_open_chat(chat_id, telegram_id, order_id, 'courier', conn)
+    elif data.startswith('cancel_order_'):
+        order_id = int(data.split('_')[2])
+        handle_cancel_order(chat_id, telegram_id, order_id, conn)
     
     _context.message_id = None
 
