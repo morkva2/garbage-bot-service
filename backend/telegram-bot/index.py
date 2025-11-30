@@ -303,7 +303,7 @@ def handle_courier_available_orders(chat_id: int, telegram_id: int, conn) -> Non
 def handle_accept_order(chat_id: int, telegram_id: int, order_id: int, conn) -> None:
     cursor = conn.cursor()
     
-    cursor.execute("SELECT status FROM orders WHERE id = %s", (order_id,))
+    cursor.execute("SELECT status, address, description, price, client_id FROM orders WHERE id = %s", (order_id,))
     order = cursor.fetchone()
     
     if not order or order[0] != 'pending':
@@ -311,17 +311,32 @@ def handle_accept_order(chat_id: int, telegram_id: int, order_id: int, conn) -> 
         cursor.close()
         return
     
+    status, address, description, price, client_id = order
+    
     cursor.execute(
         "UPDATE orders SET status = %s, courier_id = %s, accepted_at = %s, detailed_status = %s WHERE id = %s",
         ('accepted', telegram_id, datetime.now(), 'courier_on_way', order_id)
     )
     conn.commit()
+    
+    cursor.execute("SELECT first_name FROM users WHERE telegram_id = %s", (telegram_id,))
+    courier = cursor.fetchone()
+    courier_name = courier[0] if courier else "Курьер"
+    
     cursor.close()
     
-    text = f"✅ Заказ #{order_id} принят!\n\nСтатус: 🚗 Курьер едет"
+    send_message(client_id, f"🚗 <b>Курьер принял ваш заказ!</b>\n\n🆔 Заказ #{order_id}\n👔 Курьер {courier_name} уже едет к вам!")
+    
+    text = f"✅ <b>Заказ #{order_id} принят!</b>\n\n"
+    text += f"📍 Адрес: {address}\n"
+    text += f"📝 Описание: {description}\n"
+    text += f"💰 Сумма: {price} ₽\n\n"
+    text += f"Текущий статус: 🚗 <b>Еду к заказу</b>"
+    
     keyboard = {
         'inline_keyboard': [
-            [{'text': '🚚 Текущие заказы', 'callback_data': 'courier_current'}],
+            [{'text': '🛠 Начать работу', 'callback_data': f'start_work_{order_id}'}],
+            [{'text': '💬 Чат с клиентом', 'callback_data': f'courier_chat_{order_id}'}],
             [{'text': '⬅️ Назад', 'callback_data': 'start'}]
         ]
     }
@@ -354,29 +369,58 @@ def handle_courier_current_orders(chat_id: int, telegram_id: int, conn) -> None:
         text += f"💰 {price} ₽\n"
         text += f"Статус: {status_text}\n\n"
         
+        order_buttons = []
         if detailed_status == 'courier_on_way':
-            keyboard_buttons.append([{'text': f'🛠 Начать работу #{order_id}', 'callback_data': f'start_work_{order_id}'}])
+            order_buttons.append({'text': f'🛠 Начать работу', 'callback_data': f'start_work_{order_id}'})
         elif detailed_status == 'courier_working':
-            keyboard_buttons.append([{'text': f'✅ Завершить #{order_id}', 'callback_data': f'complete_order_{order_id}'}])
+            order_buttons.append({'text': f'✅ Завершить', 'callback_data': f'complete_order_{order_id}'})
         
-        keyboard_buttons.append([{'text': f'💬 Чат с клиентом #{order_id}', 'callback_data': f'courier_chat_{order_id}'}])
+        order_buttons.append({'text': f'💬 Чат', 'callback_data': f'courier_chat_{order_id}'})
+        keyboard_buttons.append(order_buttons)
     
     keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'start'}])
     send_message(chat_id, text, {'inline_keyboard': keyboard_buttons})
 
 def handle_start_work(chat_id: int, telegram_id: int, order_id: int, conn) -> None:
     cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT courier_id, address, description, price, client_id FROM orders WHERE id = %s",
+        (order_id,)
+    )
+    order = cursor.fetchone()
+    
+    if not order or order[0] != telegram_id:
+        cursor.close()
+        send_message(chat_id, "❌ Заказ не найден или не принадлежит вам")
+        return
+    
+    courier_id, address, description, price, client_id = order
+    
     cursor.execute(
         "UPDATE orders SET detailed_status = %s WHERE id = %s AND courier_id = %s",
         ('courier_working', order_id, telegram_id)
     )
     conn.commit()
+    
+    cursor.execute("SELECT first_name FROM users WHERE telegram_id = %s", (telegram_id,))
+    courier = cursor.fetchone()
+    courier_name = courier[0] if courier else "Курьер"
+    
     cursor.close()
     
-    text = f"🛠 Работа над заказом #{order_id} начата!"
+    send_message(client_id, f"🛠 <b>Курьер начал работу!</b>\n\n🆔 Заказ #{order_id}\n👔 {courier_name} начал выполнение вашего заказа")
+    
+    text = f"🛠 <b>Работа над заказом #{order_id} начата!</b>\n\n"
+    text += f"📍 Адрес: {address}\n"
+    text += f"📝 Описание: {description}\n"
+    text += f"💰 Сумма: {price} ₽\n\n"
+    text += f"Текущий статус: 🛠 <b>В работе</b>"
+    
     keyboard = {
         'inline_keyboard': [
             [{'text': '✅ Завершить заказ', 'callback_data': f'complete_order_{order_id}'}],
+            [{'text': '💬 Чат с клиентом', 'callback_data': f'courier_chat_{order_id}'}],
             [{'text': '⬅️ Назад', 'callback_data': 'courier_current'}]
         ]
     }
