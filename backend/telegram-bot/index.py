@@ -133,6 +133,8 @@ def get_main_menu_keyboard(role: str) -> Dict:
         return {
             'inline_keyboard': [
                 [{'text': '👑 Админ-панель', 'callback_data': 'admin_panel'}],
+                [{'text': '📞 Режим оператора', 'callback_data': 'switch_to_operator'}],
+                [{'text': '👔 Режим курьера', 'callback_data': 'switch_to_courier'}],
                 [{'text': '📊 Статистика сервиса', 'callback_data': 'admin_stats'}],
                 [{'text': '👔 Управление курьерами', 'callback_data': 'admin_couriers'}],
                 [{'text': '👥 Управление операторами', 'callback_data': 'admin_operators'}],
@@ -1574,6 +1576,29 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data == 'admin_all_orders':
         if role == 'admin':
             handle_admin_all_orders(chat_id, conn)
+    elif data == 'switch_to_operator':
+        if role == 'admin':
+            text = "📞 <b>Панель оператора</b>\n\nВыберите действие:"
+            smart_send_message(chat_id, text, {
+                'inline_keyboard': [
+                    [{'text': '📞 Активные заказы', 'callback_data': 'operator_active_orders'}],
+                    [{'text': '💬 Чаты заказов', 'callback_data': 'operator_chats'}],
+                    [{'text': '📊 Статистика', 'callback_data': 'operator_stats'}],
+                    [{'text': '⬅️ Назад в админку', 'callback_data': 'admin_panel'}]
+                ]
+            })
+    elif data == 'switch_to_courier':
+        if role == 'admin':
+            text = "👔 <b>Режим курьера</b>\n\nВыберите действие:"
+            smart_send_message(chat_id, text, {
+                'inline_keyboard': [
+                    [{'text': '📦 Доступные заказы', 'callback_data': 'courier_available'}],
+                    [{'text': '🚚 Текущие заказы', 'callback_data': 'courier_current'}],
+                    [{'text': '📊 История заказов', 'callback_data': 'courier_history'}],
+                    [{'text': '💰 Статистика', 'callback_data': 'courier_stats'}],
+                    [{'text': '⬅️ Назад в админку', 'callback_data': 'admin_panel'}]
+                ]
+            })
     elif data == 'admin_add_operator':
         if role == 'admin':
             handle_admin_add_operator(chat_id)
