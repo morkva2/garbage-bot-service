@@ -1242,6 +1242,7 @@ def handle_view_chat(chat_id: int, order_id: int, conn) -> None:
     keyboard = {
         'inline_keyboard': [
             [{'text': '🔄 Обновить', 'callback_data': f'view_chat_{order_id}'}],
+            [{'text': '❌ Закрыть чат', 'callback_data': 'close_chat'}],
             [{'text': '⬅️ Назад', 'callback_data': 'operator_chats'}]
         ]
     }
@@ -1391,6 +1392,7 @@ def handle_open_chat(chat_id: int, telegram_id: int, order_id: int, user_type: s
     keyboard = {
         'inline_keyboard': [
             [{'text': '🔄 Обновить', 'callback_data': f'{user_type}_chat_{order_id}'}],
+            [{'text': '❌ Закрыть чат', 'callback_data': 'close_chat'}],
             [{'text': '⬅️ Назад', 'callback_data': callback_key}]
         ]
     }
@@ -1652,6 +1654,13 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
         if role == 'admin':
             courier_id = int(data.split('_')[2])
             handle_reject_courier(chat_id, telegram_id, courier_id, conn)
+    elif data == 'close_chat':
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM chat_sessions WHERE telegram_id = %s", (telegram_id,))
+        conn.commit()
+        cursor.close()
+        send_message(chat_id, "✅ Чат закрыт. Теперь вы можете создать новый заказ или вернуться в меню.")
+        handle_start(chat_id, telegram_id, username, first_name, conn)
     elif data.startswith('client_chat_'):
         order_id = int(data.split('_')[2])
         handle_open_chat(chat_id, telegram_id, order_id, 'client', conn)
