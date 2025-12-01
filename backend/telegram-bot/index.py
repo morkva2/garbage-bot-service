@@ -1150,32 +1150,32 @@ def handle_operator_chats(chat_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
         "SELECT o.id, o.address, u1.first_name as client_name, u2.first_name as courier_name, "
-        "(SELECT COUNT(*) FROM order_chat WHERE order_id = o.id) as message_count, o.created_at "
+        "(SELECT COUNT(*) FROM order_chat WHERE order_id = o.id) as message_count, o.created_at, o.detailed_status "
         "FROM orders o "
         "JOIN users u1 ON o.client_id = u1.telegram_id "
         "LEFT JOIN users u2 ON o.courier_id = u2.telegram_id "
-        "WHERE o.status = %s AND o.courier_id IS NOT NULL "
-        "ORDER BY o.created_at DESC LIMIT 10",
-        ('accepted',)
+        "WHERE o.status NOT IN ('completed', 'cancelled') "
+        "ORDER BY o.created_at DESC LIMIT 20"
     )
     orders = cursor.fetchall()
     cursor.close()
     
     if not orders:
-        text = "💬 <b>Чаты заказов</b>\n\nНет активных заказов с чатами"
+        text = "💬 <b>Чаты заказов</b>\n\nНет активных заказов"
         keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
     else:
         text = "💬 <b>Чаты заказов</b>\n\nВыберите заказ для просмотра чата:\n\n"
         keyboard_buttons = []
         
         for order in orders:
-            order_id, address, client_name, courier_name, msg_count, created_at = order
-            text += f"🆔 Заказ #{order_id}\n"
+            order_id, address, client_name, courier_name, msg_count, created_at, detailed_status = order
+            status_emoji = ORDER_STATUSES.get(detailed_status, '📦')
+            text += f"🆔 Заказ #{order_id} {status_emoji}\n"
             text += f"👤 Клиент: {client_name}\n"
             text += f"👔 Курьер: {courier_name or 'не назначен'}\n"
             text += f"💬 Сообщений: {msg_count}\n\n"
             
-            keyboard_buttons.append([{'text': f'💬 Чат #{order_id}', 'callback_data': f'view_chat_{order_id}'}])
+            keyboard_buttons.append([{'text': f'💬 Чат #{order_id} - {client_name}', 'callback_data': f'view_chat_{order_id}'}])
         
         keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'start'}])
         keyboard = {'inline_keyboard': keyboard_buttons}
