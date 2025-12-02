@@ -119,17 +119,17 @@ def delete_message(chat_id: int, message_id: int) -> None:
 def check_user_role(telegram_id: int, conn) -> str:
     cursor = conn.cursor()
     
-    cursor.execute("SELECT 1 FROM t_p39739760_garbage_bot_service.admin_users WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(f"SELECT 1 FROM {SCHEMA}.admin_users WHERE telegram_id = %s", (telegram_id,))
     if cursor.fetchone():
         cursor.close()
         return 'admin'
     
-    cursor.execute("SELECT 1 FROM t_p39739760_garbage_bot_service.operator_users WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(f"SELECT 1 FROM {SCHEMA}.operator_users WHERE telegram_id = %s", (telegram_id,))
     if cursor.fetchone():
         cursor.close()
         return 'operator'
     
-    cursor.execute("SELECT role FROM t_p39739760_garbage_bot_service.users WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(f"SELECT role FROM {SCHEMA}.users WHERE telegram_id = %s", (telegram_id,))
     user = cursor.fetchone()
     cursor.close()
     
@@ -197,19 +197,19 @@ def archive_old_chats(conn) -> None:
     cursor = conn.cursor()
     
     cursor.execute(
-        "INSERT INTO t_p39739760_garbage_bot_service.order_chat_archive (order_id, sender_id, message, created_at) "
-        "SELECT oc.order_id, oc.sender_id, oc.message, oc.created_at "
-        "FROM t_p39739760_garbage_bot_service.order_chat oc "
-        "JOIN t_p39739760_garbage_bot_service.orders o ON oc.order_id = o.id "
+        f"INSERT INTO {SCHEMA}.order_chat_archive (order_id, sender_id, message, created_at) "
+        f"SELECT oc.order_id, oc.sender_id, oc.message, oc.created_at "
+        f"FROM {SCHEMA}.order_chat oc "
+        f"JOIN {SCHEMA}.orders o ON oc.order_id = o.id "
         "WHERE o.status IN ('completed', 'cancelled') "
         "AND o.updated_at < NOW() - INTERVAL '7 days' "
         "AND oc.is_archived = FALSE"
     )
     
     cursor.execute(
-        "UPDATE t_p39739760_garbage_bot_service.order_chat SET is_archived = TRUE "
+        f"UPDATE {SCHEMA}.order_chat SET is_archived = TRUE "
         "WHERE order_id IN ("
-        "    SELECT o.id FROM t_p39739760_garbage_bot_service.orders o "
+        f"    SELECT o.id FROM {SCHEMA}.orders o "
         "    WHERE o.status IN ('completed', 'cancelled') "
         "    AND o.updated_at < NOW() - INTERVAL '7 days'"
         ")"
@@ -496,11 +496,11 @@ def handle_complete_order(chat_id: int, telegram_id: int, order_id: int, conn) -
     )
     
     cursor.execute(
-        "INSERT INTO courier_stats (courier_id, total_orders, total_earnings) "
+        f"INSERT INTO {SCHEMA}.courier_stats (courier_id, total_orders, total_earnings) "
         "VALUES (%s, 1, %s) "
-        "ON CONFLICT (courier_id) DO UPDATE SET "
-        "total_orders = courier_stats.total_orders + 1, "
-        "total_earnings = courier_stats.total_earnings + %s, "
+        f"ON CONFLICT (courier_id) DO UPDATE SET "
+        f"total_orders = {SCHEMA}.courier_stats.total_orders + 1, "
+        f"total_earnings = {SCHEMA}.courier_stats.total_earnings + %s, "
         "updated_at = %s",
         (telegram_id, price, price, datetime.now())
     )
@@ -539,7 +539,7 @@ def handle_courier_stats(chat_id: int, telegram_id: int, conn) -> None:
     )
     stats = cursor.fetchone()
     
-    cursor.execute("SELECT AVG(rating) FROM ratings WHERE courier_id = %s", (telegram_id,))
+    cursor.execute(f"SELECT AVG(rating) FROM {SCHEMA}.ratings WHERE courier_id = %s", (telegram_id,))
     avg_rating = cursor.fetchone()
     cursor.close()
     
@@ -596,7 +596,7 @@ def handle_select_bags(chat_id: int, telegram_id: int, bag_count: int, conn) -> 
     cursor = conn.cursor()
     
     cursor.execute(
-        "SELECT id, type, bags_used_today, last_order_date FROM subscriptions "
+        f"SELECT id, type, bags_used_today, last_order_date FROM {SCHEMA}.subscriptions "
         "WHERE client_id = %s AND is_active = true AND end_date >= CURRENT_DATE "
         "ORDER BY end_date DESC LIMIT 1",
         (telegram_id,)
@@ -626,14 +626,14 @@ def handle_select_bags(chat_id: int, telegram_id: int, bag_count: int, conn) -> 
                 total_price = 0
                 
                 cursor.execute(
-                    "UPDATE t_p39739760_garbage_bot_service.subscriptions SET bags_used_today = %s, last_order_date = %s WHERE id = %s",
+                    f"UPDATE {SCHEMA}.subscriptions SET bags_used_today = %s, last_order_date = %s WHERE id = %s",
                     (bags_used + bag_count, today, sub_id)
                 )
                 conn.commit()
     
-    cursor.execute("DELETE FROM t_p39739760_garbage_bot_service.chat_sessions WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(f"DELETE FROM {SCHEMA}.chat_sessions WHERE telegram_id = %s", (telegram_id,))
     cursor.execute(
-        "INSERT INTO t_p39739760_garbage_bot_service.chat_sessions (telegram_id, state, order_data) VALUES (%s, %s, %s)",
+        f"INSERT INTO {SCHEMA}.chat_sessions (telegram_id, state, order_data) VALUES (%s, %s, %s)",
         (telegram_id, 'waiting_address', json.dumps({'bag_count': bag_count, 'is_subscription': is_subscription_order, 'price': total_price}))
     )
     conn.commit()
@@ -864,16 +864,16 @@ def handle_set_order_status(chat_id: int, order_id: int, new_status: str, conn) 
 def handle_admin_subscriptions(chat_id: int, conn) -> None:
     cursor = conn.cursor()
     
-    cursor.execute("SELECT COUNT(*) FROM t_p39739760_garbage_bot_service.subscriptions WHERE is_active = true AND end_date >= CURRENT_DATE")
+    cursor.execute(f"SELECT COUNT(*) FROM {SCHEMA}.subscriptions WHERE is_active = true AND end_date >= CURRENT_DATE")
     active_count = cursor.fetchone()[0]
     
-    cursor.execute("SELECT SUM(price) FROM t_p39739760_garbage_bot_service.subscriptions WHERE is_active = true")
+    cursor.execute(f"SELECT SUM(price) FROM {SCHEMA}.subscriptions WHERE is_active = true")
     total_revenue = cursor.fetchone()[0] or 0
     
     cursor.execute(
-        "SELECT s.id, u.first_name, u.telegram_id, s.type, s.end_date, s.bags_used_today "
-        "FROM t_p39739760_garbage_bot_service.subscriptions s "
-        "JOIN t_p39739760_garbage_bot_service.users u ON s.client_id = u.telegram_id "
+        f"SELECT s.id, u.first_name, u.telegram_id, s.type, s.end_date, s.bags_used_today "
+        f"FROM {SCHEMA}.subscriptions s "
+        f"JOIN {SCHEMA}.users u ON s.client_id = u.telegram_id "
         "WHERE s.is_active = true AND s.end_date >= CURRENT_DATE "
         "ORDER BY s.end_date ASC LIMIT 20"
     )
@@ -905,7 +905,7 @@ def handle_admin_subscriptions(chat_id: int, conn) -> None:
 
 def handle_cancel_subscription(chat_id: int, sub_id: int, conn) -> None:
     cursor = conn.cursor()
-    cursor.execute("UPDATE t_p39739760_garbage_bot_service.subscriptions SET is_active = false WHERE id = %s", (sub_id,))
+    cursor.execute(f"UPDATE {SCHEMA}.subscriptions SET is_active = false WHERE id = %s", (sub_id,))
     conn.commit()
     cursor.close()
     
@@ -962,7 +962,7 @@ def handle_admin_couriers_menu(chat_id: int, conn) -> None:
 def handle_admin_operators_menu(chat_id: int, conn) -> None:
     cursor = conn.cursor()
     
-    cursor.execute("SELECT COUNT(*) FROM operator_users")
+    cursor.execute(f"SELECT COUNT(*) FROM {SCHEMA}.operator_users")
     total_operators = cursor.fetchone()[0]
     
     cursor.close()
@@ -1003,20 +1003,20 @@ def handle_admin_stats(chat_id: int, conn) -> None:
     cursor.execute("SELECT COUNT(*) FROM t_p39739760_garbage_bot_service.users WHERE role = %s", ('courier',))
     total_couriers = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(*) FROM operator_users")
+    cursor.execute(f"SELECT COUNT(*) FROM {SCHEMA}.operator_users")
     total_operators = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(*) FROM orders")
+    cursor.execute(f"SELECT COUNT(*) FROM {SCHEMA}.orders")
     total_orders = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(*) FROM t_p39739760_garbage_bot_service.orders WHERE status = %s", ('completed',))
+    cursor.execute(f"SELECT COUNT(*) FROM {SCHEMA}.orders WHERE status = %s", ('completed',))
     completed_orders = cursor.fetchone()[0]
     
-    cursor.execute("SELECT SUM(price) FROM t_p39739760_garbage_bot_service.orders WHERE status = %s", ('completed',))
+    cursor.execute(f"SELECT SUM(price) FROM {SCHEMA}.orders WHERE status = %s", ('completed',))
     total_revenue = cursor.fetchone()[0] or 0
     
     cursor.execute(
-        "SELECT AVG(price) FROM t_p39739760_garbage_bot_service.orders WHERE status = %s",
+        f"SELECT AVG(price) FROM {SCHEMA}.orders WHERE status = %s",
         ('completed',)
     )
     avg_order = cursor.fetchone()[0] or 0
@@ -1043,9 +1043,9 @@ def handle_admin_stats(chat_id: int, conn) -> None:
 def handle_admin_couriers_list(chat_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT u.telegram_id, u.username, u.first_name, cs.total_orders, cs.total_earnings "
-        "FROM users u "
-        "LEFT JOIN courier_stats cs ON u.telegram_id = cs.courier_id "
+        f"SELECT u.telegram_id, u.username, u.first_name, cs.total_orders, cs.total_earnings "
+        f"FROM {SCHEMA}.users u "
+        f"LEFT JOIN {SCHEMA}.courier_stats cs ON u.telegram_id = cs.courier_id "
         "WHERE u.role = %s "
         "ORDER BY cs.total_orders DESC NULLS LAST LIMIT 20",
         ('courier',)
@@ -1071,8 +1071,8 @@ def handle_admin_couriers_list(chat_id: int, conn) -> None:
 def handle_admin_operators_list(chat_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT u.telegram_id, u.username, u.first_name, ou.created_at "
-        "FROM operator_users ou "
+        f"SELECT u.telegram_id, u.username, u.first_name, ou.created_at "
+        f"FROM {SCHEMA}.operator_users ou "
         "JOIN t_p39739760_garbage_bot_service.users u ON ou.telegram_id = u.telegram_id "
         "ORDER BY ou.created_at DESC"
     )
@@ -1215,7 +1215,7 @@ def handle_client_history(chat_id: int, telegram_id: int, conn) -> None:
 def handle_courier_history(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, address, description, price FROM orders "
+        f"SELECT id, address, description, price FROM {SCHEMA}.orders "
         "WHERE courier_id = %s AND status = %s "
         "ORDER BY completed_at DESC LIMIT 10",
         (telegram_id, 'completed')
@@ -1260,7 +1260,7 @@ def handle_buy_subscription(chat_id: int, telegram_id: int, sub_type: str, conn)
     
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO t_p39739760_garbage_bot_service.subscriptions (client_id, type, price, start_date, end_date, is_active) "
+        f"INSERT INTO {SCHEMA}.subscriptions (client_id, type, price, start_date, end_date, is_active) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
         (telegram_id, sub_type, price, start_date, end_date, True)
     )
@@ -1287,7 +1287,7 @@ def handle_buy_subscription(chat_id: int, telegram_id: int, sub_type: str, conn)
 def handle_client_subscription(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT type, end_date, bags_used_today, last_order_date FROM subscriptions "
+        f"SELECT type, end_date, bags_used_today, last_order_date FROM {SCHEMA}.subscriptions "
         "WHERE client_id = %s AND is_active = true AND end_date >= CURRENT_DATE "
         "ORDER BY end_date DESC LIMIT 1",
         (telegram_id,)
@@ -1460,9 +1460,9 @@ def handle_view_chat(chat_id: int, order_id: int, conn) -> None:
     messages = cursor.fetchall()
     
     cursor.execute(
-        "SELECT oca.message, oca.created_at, u.first_name, oca.sender_id "
-        "FROM order_chat_archive oca "
-        "JOIN t_p39739760_garbage_bot_service.users u ON oca.sender_id = u.telegram_id "
+        f"SELECT oca.message, oca.created_at, u.first_name, oca.sender_id "
+        f"FROM {SCHEMA}.order_chat_archive oca "
+        f"JOIN {SCHEMA}.users u ON oca.sender_id = u.telegram_id "
         "WHERE oca.order_id = %s "
         "ORDER BY oca.created_at ASC",
         (order_id,)
@@ -1976,7 +1976,7 @@ def handle_message(message: Dict, conn) -> None:
         return
     
     cursor = conn.cursor()
-    cursor.execute("SELECT order_id FROM t_p39739760_garbage_bot_service.chat_sessions WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(f"SELECT order_id FROM {SCHEMA}.chat_sessions WHERE telegram_id = %s", (telegram_id,))
     active_chat = cursor.fetchone()
     cursor.close()
     
@@ -1984,7 +1984,7 @@ def handle_message(message: Dict, conn) -> None:
         order_id = active_chat[0]
         
         cursor = conn.cursor()
-        cursor.execute("SELECT client_id, courier_id, status FROM t_p39739760_garbage_bot_service.orders WHERE id = %s", (order_id,))
+        cursor.execute(f"SELECT client_id, courier_id, status FROM {SCHEMA}.orders WHERE id = %s", (order_id,))
         order_info = cursor.fetchone()
         cursor.close()
         
@@ -1993,7 +1993,7 @@ def handle_message(message: Dict, conn) -> None:
             
             if order_status == 'completed':
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM t_p39739760_garbage_bot_service.chat_sessions WHERE telegram_id = %s", (telegram_id,))
+                cursor.execute(f"DELETE FROM {SCHEMA}.chat_sessions WHERE telegram_id = %s", (telegram_id,))
                 conn.commit()
                 cursor.close()
             elif telegram_id == client_id or telegram_id == courier_id:
@@ -2041,7 +2041,7 @@ def handle_message(message: Dict, conn) -> None:
                 order_id = int(text.replace('chat_', ''))
                 
                 cursor = conn.cursor()
-                cursor.execute("SELECT id FROM t_p39739760_garbage_bot_service.orders WHERE id = %s", (order_id,))
+                cursor.execute(f"SELECT id FROM {SCHEMA}.orders WHERE id = %s", (order_id,))
                 order_exists = cursor.fetchone()
                 cursor.close()
                 
@@ -2104,17 +2104,17 @@ def handle_message(message: Dict, conn) -> None:
             total_price = order_data.get('price', BAG_PRICE * bag_count + FIXED_COURIER_PAYMENT)
             
             cursor.execute(
-                "INSERT INTO t_p39739760_garbage_bot_service.orders (client_id, address, description, price, status, detailed_status, bag_count, is_subscription_order) "
+                f"INSERT INTO {SCHEMA}.orders (client_id, address, description, price, status, detailed_status, bag_count, is_subscription_order) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (telegram_id, address, f"Вывоз мусора ({bag_count} пакетов)", total_price, 'pending', 'searching_courier', bag_count, is_subscription)
             )
             order_id = cursor.fetchone()[0]
             conn.commit()
             
-            cursor.execute("DELETE FROM t_p39739760_garbage_bot_service.chat_sessions WHERE telegram_id = %s", (telegram_id,))
+            cursor.execute(f"DELETE FROM {SCHEMA}.chat_sessions WHERE telegram_id = %s", (telegram_id,))
             conn.commit()
             
-            cursor.execute("SELECT telegram_id FROM t_p39739760_garbage_bot_service.users WHERE role = %s", ('courier',))
+            cursor.execute(f"SELECT telegram_id FROM {SCHEMA}.users WHERE role = %s", ('courier',))
             couriers = cursor.fetchall()
             cursor.close()
             
