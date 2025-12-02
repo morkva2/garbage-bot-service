@@ -17,6 +17,8 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 _context = local()
 
 FIXED_COURIER_PAYMENT = 500
+BAG_PRICE = 50
+MAX_BAGS_QUICK_SELECT = 10
 
 ORDER_STATUSES = {
     'searching_courier': '🔍 В поиске курьера',
@@ -156,7 +158,6 @@ def get_main_menu_keyboard(role: str) -> Dict:
             'inline_keyboard': [
                 [{'text': '👔 Стать курьером', 'callback_data': 'apply_courier'}],
                 [{'text': '👤 Для клиентов', 'callback_data': 'client_menu'}],
-                [{'text': '⭐ Отзывы', 'callback_data': 'reviews'}],
                 [{'text': '💬 Поддержка', 'url': 'https://t.me/support'}]
             ]
         }
@@ -563,50 +564,119 @@ def handle_courier_stats(chat_id: int, telegram_id: int, conn) -> None:
     }
     smart_send_message(chat_id, text, keyboard)
 
-def handle_reviews(chat_id: int, conn) -> None:
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT r.rating, r.review, u.first_name FROM ratings r "
-        "JOIN users u ON r.courier_id = u.telegram_id "
-        "ORDER BY r.created_at DESC LIMIT 10"
-    )
-    reviews = cursor.fetchall()
-    cursor.close()
-    
-    if not reviews:
-        text = "⭐ <b>Отзывы клиентов</b>\n\nОтзывов пока нет"
-    else:
-        text = "⭐ <b>Отзывы клиентов</b>\n\n"
-        for review in reviews:
-            rating, review_text, courier_name = review
-            stars = '⭐' * rating
-            text += f"{stars} - {courier_name}\n"
-            if review_text:
-                text += f"💬 {review_text}\n"
-            text += "\n"
-    
-    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
-    smart_send_message(chat_id, text, keyboard)
+
 
 def handle_client_new_order(chat_id: int) -> None:
     text = (
-        "➕ <b>Создание нового заказа</b>\n\n"
-        "Отправьте информацию о заказе в формате:\n\n"
-        "<code>Адрес\n"
-        "Описание</code>\n\n"
-        "<b>Пример:</b>\n"
-        "ул. Ленина, д. 45, кв. 12\n"
-        "Вывоз строительного мусора (3 мешка)\n\n"
-        f"💰 Стоимость услуги: <b>{FIXED_COURIER_PAYMENT} ₽</b>"
+        "🗑 <b>Выберите количество пакетов</b>\n\n"
+        f"💰 Цена: {BAG_PRICE} ₽ за пакет (35л)\n"
+        f"💵 Доставка: {FIXED_COURIER_PAYMENT} ₽\n\n"
+        "Выберите количество или введите своё:"
     )
     
-    keyboard = {'inline_keyboard': [[{'text': '⬅️ Отмена', 'callback_data': 'client_menu'}]]}
+    keyboard_buttons = []
+    for i in range(1, MAX_BAGS_QUICK_SELECT + 1):
+        total = BAG_PRICE * i + FIXED_COURIER_PAYMENT
+        keyboard_buttons.append([{'text': f'{i} пакет - {total} ₽', 'callback_data': f'select_bags_{i}'}])
+    
+    keyboard_buttons.append([{'text': '✏️ Ввести своё количество', 'callback_data': 'custom_bags'}])
+    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'client_menu'}])
+    
+    keyboard = {'inline_keyboard': keyboard_buttons}
+    smart_send_message(chat_id, text, keyboard)
+
+def handle_select_bags(chat_id: int, telegram_id: int, bag_count: int, conn) -> None:
+    from datetime import timedelta
+    
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT id, type, bags_used_today, last_order_date FROM subscriptions "
+        "WHERE client_id = %s AND is_active = true AND end_date >= CURRENT_DATE "
+        "ORDER BY end_date DESC LIMIT 1",
+        (telegram_id,)
+    )
+    subscription = cursor.fetchone()
+    
+    is_subscription_order = False
+    total_price = BAG_PRICE * bag_count + FIXED_COURIER_PAYMENT
+    
+    if subscription and bag_count <= 2:
+        sub_id, sub_type, bags_used, last_date = subscription
+        today = datetime.now().date()
+        
+        can_use_sub = False
+        if sub_type == 'daily':
+            can_use_sub = True
+        elif sub_type == 'alternate_day':
+            if last_date is None or (today - last_date).days >= 2:
+                can_use_sub = True
+        
+        if can_use_sub:
+            if last_date != today:
+                bags_used = 0
+            
+            if bags_used + bag_count <= 2:
+                is_subscription_order = True
+                total_price = 0
+                
+                cursor.execute(
+                    "UPDATE subscriptions SET bags_used_today = %s, last_order_date = %s WHERE id = %s",
+                    (bags_used + bag_count, today, sub_id)
+                )
+                conn.commit()
+    
+    cursor.execute("DELETE FROM chat_sessions WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(
+        "INSERT INTO chat_sessions (telegram_id, state, order_data) VALUES (%s, %s, %s)",
+        (telegram_id, 'waiting_address', json.dumps({'bag_count': bag_count, 'is_subscription': is_subscription_order, 'price': total_price}))
+    )
+    conn.commit()
+    cursor.close()
+    
+    if is_subscription_order:
+        text = (
+            f"✅ <b>По подписке: {bag_count} пакетов</b>\n\n"
+            f"💰 Стоимость: 0 ₽ (включено в подписку)\n\n"
+            "📍 <b>Отправьте адрес доставки:</b>\n\n"
+            "<b>Пример:</b>\n"
+            "ул. Ленина, д. 45, кв. 12"
+        )
+    else:
+        text = (
+            f"📦 <b>Выбрано пакетов: {bag_count}</b>\n\n"
+            f"💰 Стоимость: {total_price} ₽\n"
+            f"({bag_count} × {BAG_PRICE}₽ + доставка {FIXED_COURIER_PAYMENT}₽)\n\n"
+            "📍 <b>Отправьте адрес доставки:</b>\n\n"
+            "<b>Пример:</b>\n"
+            "ул. Ленина, д. 45, кв. 12"
+        )
+    
+    keyboard = {'inline_keyboard': [[{'text': '❌ Отмена', 'callback_data': 'client_menu'}]]}
+    smart_send_message(chat_id, text, keyboard)
+
+def handle_custom_bags_prompt(chat_id: int, telegram_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM chat_sessions WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(
+        "INSERT INTO chat_sessions (telegram_id, state) VALUES (%s, %s)",
+        (telegram_id, 'waiting_custom_bags')
+    )
+    conn.commit()
+    cursor.close()
+    
+    text = (
+        "✏️ <b>Введите количество пакетов</b>\n\n"
+        "Напишите число от 1 до 100:"
+    )
+    
+    keyboard = {'inline_keyboard': [[{'text': '❌ Отмена', 'callback_data': 'client_menu'}]]}
     smart_send_message(chat_id, text, keyboard)
 
 def handle_client_active_orders(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT o.id, o.address, o.description, o.price, o.detailed_status, u.first_name, o.courier_id "
+        "SELECT o.id, o.address, o.description, o.price, o.detailed_status, u.first_name, o.courier_id, o.bag_count "
         "FROM orders o "
         "LEFT JOIN users u ON o.courier_id = u.telegram_id "
         "WHERE o.client_id = %s AND o.status IN (%s, %s) "
@@ -624,11 +694,11 @@ def handle_client_active_orders(chat_id: int, telegram_id: int, conn) -> None:
         keyboard_buttons = []
         
         for order in orders:
-            order_id, address, description, price, detailed_status, courier_name, courier_id = order
+            order_id, address, description, price, detailed_status, courier_name, courier_id, bag_count = order
             status_text = ORDER_STATUSES.get(detailed_status, detailed_status)
-            text += f"🆔 Заказ #{order_id}\n"
+            text += f"🆔 #{order_id}\n"
             text += f"📍 {address}\n"
-            text += f"📝 {description}\n"
+            text += f"📦 {bag_count or 1} пакетов\n"
             text += f"💰 {price} ₽\n"
             text += f"Статус: {status_text}\n"
             if courier_name:
@@ -786,6 +856,57 @@ def handle_set_order_status(chat_id: int, order_id: int, new_status: str, conn) 
     
     smart_send_message(chat_id, text, keyboard)
 
+def handle_admin_subscriptions(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM subscriptions WHERE is_active = true AND end_date >= CURRENT_DATE")
+    active_count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT SUM(price) FROM subscriptions WHERE is_active = true")
+    total_revenue = cursor.fetchone()[0] or 0
+    
+    cursor.execute(
+        "SELECT s.id, u.first_name, u.telegram_id, s.type, s.end_date, s.bags_used_today "
+        "FROM subscriptions s "
+        "JOIN users u ON s.client_id = u.telegram_id "
+        "WHERE s.is_active = true AND s.end_date >= CURRENT_DATE "
+        "ORDER BY s.end_date ASC LIMIT 20"
+    )
+    subscriptions = cursor.fetchall()
+    cursor.close()
+    
+    text = f"⭐ <b>Управление подписками</b>\n\n📊 Активных: {active_count}\n💰 Доход: {total_revenue}₽\n\n"
+    keyboard_buttons = []
+    
+    if subscriptions:
+        text += "<b>Активные подписки:</b>\n\n"
+        for sub in subscriptions:
+            sub_id, name, tg_id, sub_type, end_date, bags_used = sub
+            sub_name = "Ежедневно" if sub_type == 'daily' else "Через день"
+            days_left = (end_date - datetime.now().date()).days
+            text += f"👤 {name} (ID: {tg_id})\n"
+            text += f"📅 {sub_name}, до {end_date.strftime('%d.%m')}, {days_left}д\n"
+            text += f"📦 Использовано: {bags_used}/2\n\n"
+            
+            keyboard_buttons.append([
+                {'text': f'❌ Отменить {name}', 'callback_data': f'cancel_sub_{sub_id}'}
+            ])
+    else:
+        text += "Нет активных подписок"
+    
+    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}])
+    keyboard = {'inline_keyboard': keyboard_buttons}
+    smart_send_message(chat_id, text, keyboard)
+
+def handle_cancel_subscription(chat_id: int, sub_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute("UPDATE subscriptions SET is_active = false WHERE id = %s", (sub_id,))
+    conn.commit()
+    cursor.close()
+    
+    send_message(chat_id, "✅ Подписка отменена")
+    handle_admin_subscriptions(chat_id, conn)
+
 def handle_admin_panel(chat_id: int, conn) -> None:
     text = "👑 <b>Админ-панель</b>\n\nВыберите действие:"
     
@@ -793,6 +914,7 @@ def handle_admin_panel(chat_id: int, conn) -> None:
         'inline_keyboard': [
             [{'text': '👔 Управление курьерами', 'callback_data': 'admin_couriers'}],
             [{'text': '👥 Управление операторами', 'callback_data': 'admin_operators'}],
+            [{'text': '⭐ Управление подписками', 'callback_data': 'admin_subscriptions'}],
             [{'text': '📊 Статистика сервиса', 'callback_data': 'admin_stats'}],
             [{'text': '📦 Все заказы', 'callback_data': 'admin_all_orders'}],
             [{'text': '⬅️ Назад', 'callback_data': 'start'}]
@@ -1122,17 +1244,87 @@ def handle_client_payment(chat_id: int) -> None:
     keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]}
     smart_send_message(chat_id, text, keyboard)
 
-def handle_client_subscription(chat_id: int) -> None:
-    text = (
-        "⭐ <b>Подписка</b>\n\n"
-        "Текущий план: <b>Базовый</b>\n\n"
-        "Преимущества:\n"
-        "• ✅ Без комиссии за первые 3 заказа\n"
-        "• ✅ Приоритетная поддержка\n"
-        "• ✅ Скидки на услуги\n\n"
-        "Для перехода на премиум-план свяжитесь с поддержкой."
+def handle_buy_subscription(chat_id: int, telegram_id: int, sub_type: str, conn) -> None:
+    from datetime import timedelta
+    
+    price = 2499 if sub_type == 'daily' else 1399
+    sub_name = "Каждый день" if sub_type == 'daily' else "Через день"
+    
+    start_date = datetime.now().date()
+    end_date = start_date + timedelta(days=30)
+    
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO subscriptions (client_id, type, price, start_date, end_date, is_active) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (telegram_id, sub_type, price, start_date, end_date, True)
     )
-    keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]}
+    conn.commit()
+    cursor.close()
+    
+    text = (
+        f"✅ <b>Подписка '{sub_name}' активирована!</b>\n\n"
+        f"💰 Стоимость: {price}₽\n"
+        f"📅 Действует до: {end_date.strftime('%d.%m.%Y')}\n\n"
+        "Теперь вы можете заказывать вывоз до 2 пакетов без доплаты!\n\n"
+        "💳 Оплатите подписку по реквизитам в поддержке."
+    )
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '📦 Создать заказ', 'callback_data': 'client_new_order'}],
+            [{'text': '⬅️ В меню', 'callback_data': 'client_menu'}]
+        ]
+    }
+    
+    smart_send_message(chat_id, text, keyboard)
+
+def handle_client_subscription(chat_id: int, telegram_id: int, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT type, end_date, bags_used_today, last_order_date FROM subscriptions "
+        "WHERE client_id = %s AND is_active = true AND end_date >= CURRENT_DATE "
+        "ORDER BY end_date DESC LIMIT 1",
+        (telegram_id,)
+    )
+    subscription = cursor.fetchone()
+    cursor.close()
+    
+    if subscription:
+        sub_type, end_date, bags_used, last_date = subscription
+        sub_name = "Через день" if sub_type == 'alternate_day' else "Ежедневно"
+        days_left = (end_date - datetime.now().date()).days
+        
+        text = (
+            f"✅ <b>Активна подписка: {sub_name}</b>\n\n"
+            f"📅 До {end_date.strftime('%d.%m.%Y')} ({days_left} дней)\n"
+            f"📦 Использовано сегодня: {bags_used}/2\n\n"
+            "Подписка включает:\n"
+            "• Вывоз до 2 пакетов в день\n"
+            "• Без доплат за доставку\n"
+        )
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]]}
+    else:
+        text = (
+            "⭐ <b>Подписки на вывоз мусора</b>\n\n"
+            "🔄 <b>Через день (1399₽/мес)</b>\n"
+            "• До 2 пакетов через день\n"
+            "• Без доплат\n"
+            "• Экономия ~40%\n\n"
+            "📅 <b>Каждый день (2499₽/мес)</b>\n"
+            "• До 2 пакетов каждый день\n"
+            "• Без доплат\n"
+            "• Максимум удобства\n\n"
+            "Выберите подходящий вариант:"
+        )
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🔄 Через день - 1399₽', 'callback_data': 'buy_sub_alternate'}],
+                [{'text': '📅 Каждый день - 2499₽', 'callback_data': 'buy_sub_daily'}],
+                [{'text': '⬅️ Назад', 'callback_data': 'client_menu'}]
+            ]
+        }
+    
     smart_send_message(chat_id, text, keyboard)
 
 def handle_courier_withdraw(chat_id: int, telegram_id: int, conn) -> None:
@@ -1617,8 +1809,7 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
         handle_courier_current_orders(chat_id, telegram_id, conn)
     elif data == 'courier_stats':
         handle_courier_stats(chat_id, telegram_id, conn)
-    elif data == 'reviews':
-        handle_reviews(chat_id, conn)
+
     elif data == 'client_new_order':
         handle_client_new_order(chat_id)
     elif data == 'client_active':
@@ -1653,6 +1844,13 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data == 'admin_all_orders':
         if role == 'admin':
             handle_admin_all_orders(chat_id, conn)
+    elif data == 'admin_subscriptions':
+        if role == 'admin':
+            handle_admin_subscriptions(chat_id, conn)
+    elif data.startswith('cancel_sub_'):
+        if role == 'admin':
+            sub_id = int(data.split('_')[2])
+            handle_cancel_subscription(chat_id, sub_id, conn)
     elif data == 'switch_to_operator':
         if role == 'admin':
             text = "📞 <b>Панель оператора</b>\n\nВыберите действие:"
@@ -1689,7 +1887,7 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data == 'client_payment':
         handle_client_payment(chat_id)
     elif data == 'client_subscription':
-        handle_client_subscription(chat_id)
+        handle_client_subscription(chat_id, telegram_id, conn)
     elif data == 'courier_withdraw':
         handle_courier_withdraw(chat_id, telegram_id, conn)
     elif data == 'operator_stats':
@@ -1748,6 +1946,15 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data.startswith('cancel_order_'):
         order_id = int(data.split('_')[2])
         handle_cancel_order(chat_id, telegram_id, order_id, conn)
+    elif data.startswith('select_bags_'):
+        bag_count = int(data.split('_')[2])
+        handle_select_bags(chat_id, telegram_id, bag_count, conn)
+    elif data == 'custom_bags':
+        handle_custom_bags_prompt(chat_id, telegram_id, conn)
+    elif data == 'buy_sub_alternate':
+        handle_buy_subscription(chat_id, telegram_id, 'alternate_day', conn)
+    elif data == 'buy_sub_daily':
+        handle_buy_subscription(chat_id, telegram_id, 'daily', conn)
     
     _context.message_id = None
 
@@ -1856,48 +2063,77 @@ def handle_message(message: Dict, conn) -> None:
                 send_message(chat_id, "❌ Неверный формат чата. Используйте: chat_ID текст")
                 return
     
-    lines = text.strip().split('\n')
-    if len(lines) == 2:
-        address = lines[0].strip()
-        description = lines[1].strip()
-        
-        if len(address) > 500 or len(description) > 1000:
-            send_message(chat_id, "❌ Адрес или описание слишком длинные")
-            return
-        
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO orders (client_id, address, description, price, status, detailed_status) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (telegram_id, address, description, FIXED_COURIER_PAYMENT, 'pending', 'searching_courier')
-        )
-        order_id = cursor.fetchone()[0]
-        conn.commit()
-        
-        cursor.execute("SELECT telegram_id FROM users WHERE role = %s", ('courier',))
-        couriers = cursor.fetchall()
-        cursor.close()
-        
-        keyboard = {
-            'inline_keyboard': [
-                [{'text': '📦 Мои заказы', 'callback_data': 'client_active'}],
-                [{'text': '⬅️ В меню', 'callback_data': 'start'}]
-            ]
-        }
-        smart_send_message(chat_id, f"✅ Заказ #{order_id} создан\n🔍 Ищем курьера...", keyboard)
-        
-        notification_keyboard = {
-            'inline_keyboard': [
-                [{'text': '✅ Принять', 'callback_data': f'accept_order_{order_id}'}]
-            ]
-        }
-        
-        for courier in couriers:
-            courier_id = courier[0]
-            send_message(courier_id, f"🆕 #{order_id}: {address}\n💰 {FIXED_COURIER_PAYMENT} ₽", notification_keyboard)
-        
-        return
+    cursor = conn.cursor()
+    cursor.execute("SELECT state, order_data FROM chat_sessions WHERE telegram_id = %s", (telegram_id,))
+    session = cursor.fetchone()
     
+    if session:
+        state, order_data_json = session
+        
+        if state == 'waiting_custom_bags':
+            try:
+                bag_count = int(text.strip())
+                if bag_count < 1 or bag_count > 100:
+                    send_message(chat_id, "❌ Введите число от 1 до 100")
+                    cursor.close()
+                    return
+                
+                handle_select_bags(chat_id, telegram_id, bag_count, conn)
+                cursor.close()
+                return
+            except ValueError:
+                send_message(chat_id, "❌ Введите корректное число")
+                cursor.close()
+                return
+        
+        elif state == 'waiting_address':
+            address = text.strip()
+            if len(address) > 500:
+                send_message(chat_id, "❌ Адрес слишком длинный")
+                cursor.close()
+                return
+            
+            order_data = json.loads(order_data_json) if order_data_json else {}
+            bag_count = order_data.get('bag_count', 1)
+            is_subscription = order_data.get('is_subscription', False)
+            total_price = order_data.get('price', BAG_PRICE * bag_count + FIXED_COURIER_PAYMENT)
+            
+            cursor.execute(
+                "INSERT INTO orders (client_id, address, description, price, status, detailed_status, bag_count, is_subscription_order) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (telegram_id, address, f"Вывоз мусора ({bag_count} пакетов)", total_price, 'pending', 'searching_courier', bag_count, is_subscription)
+            )
+            order_id = cursor.fetchone()[0]
+            conn.commit()
+            
+            cursor.execute("DELETE FROM chat_sessions WHERE telegram_id = %s", (telegram_id,))
+            conn.commit()
+            
+            cursor.execute("SELECT telegram_id FROM users WHERE role = %s", ('courier',))
+            couriers = cursor.fetchall()
+            cursor.close()
+            
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '📦 Мои заказы', 'callback_data': 'client_active'}],
+                    [{'text': '⬅️ В меню', 'callback_data': 'start'}]
+                ]
+            }
+            smart_send_message(chat_id, f"✅ Заказ #{order_id} создан\n🔍 Ищем курьера...", keyboard)
+            
+            notification_keyboard = {
+                'inline_keyboard': [
+                    [{'text': '✅ Принять', 'callback_data': f'accept_order_{order_id}'}]
+                ]
+            }
+            
+            for courier in couriers:
+                courier_id = courier[0]
+                send_message(courier_id, f"🆕 #{order_id}: {address}\n📦 {bag_count} пакетов\n💰 {total_price} ₽", notification_keyboard)
+            
+            return
+    
+    cursor.close()
     send_message(chat_id, "Используйте /start для начала работы")
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
