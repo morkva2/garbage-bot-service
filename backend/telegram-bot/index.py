@@ -629,10 +629,12 @@ def handle_select_bags(chat_id: int, telegram_id: int, bag_count: int, conn) -> 
                 )
                 conn.commit()
     
-    cursor.execute(f"DELETE FROM {SCHEMA}.chat_sessions WHERE telegram_id = %s", (telegram_id,))
     cursor.execute(
-        f"INSERT INTO {SCHEMA}.chat_sessions (telegram_id, state, order_data) VALUES (%s, %s, %s)",
-        (telegram_id, 'waiting_address', json.dumps({'bag_count': bag_count, 'is_subscription': is_subscription_order, 'price': total_price}))
+        f"INSERT INTO {SCHEMA}.order_draft (telegram_id, state, order_data) "
+        "VALUES (%s, %s, %s) "
+        "ON CONFLICT (telegram_id) DO UPDATE SET state = %s, order_data = %s, updated_at = CURRENT_TIMESTAMP",
+        (telegram_id, 'waiting_address', json.dumps({'bag_count': bag_count, 'is_subscription': is_subscription_order, 'price': total_price}),
+         'waiting_address', json.dumps({'bag_count': bag_count, 'is_subscription': is_subscription_order, 'price': total_price}))
     )
     conn.commit()
     cursor.close()
@@ -660,10 +662,11 @@ def handle_select_bags(chat_id: int, telegram_id: int, bag_count: int, conn) -> 
 
 def handle_custom_bags_prompt(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM t_p39739760_garbage_bot_service.chat_sessions WHERE telegram_id = %s", (telegram_id,))
     cursor.execute(
-        "INSERT INTO t_p39739760_garbage_bot_service.chat_sessions (telegram_id, state) VALUES (%s, %s)",
-        (telegram_id, 'waiting_custom_bags')
+        f"INSERT INTO {SCHEMA}.order_draft (telegram_id, state) "
+        "VALUES (%s, %s) "
+        "ON CONFLICT (telegram_id) DO UPDATE SET state = %s, updated_at = CURRENT_TIMESTAMP",
+        (telegram_id, 'waiting_custom_bags', 'waiting_custom_bags')
     )
     conn.commit()
     cursor.close()
@@ -2153,7 +2156,7 @@ def handle_message(message: Dict, conn) -> None:
                 return
     
     cursor = conn.cursor()
-    cursor.execute(f"SELECT state, order_data FROM {SCHEMA}.chat_sessions WHERE telegram_id = %s", (telegram_id,))
+    cursor.execute(f"SELECT state, order_data FROM {SCHEMA}.order_draft WHERE telegram_id = %s", (telegram_id,))
     session = cursor.fetchone()
     
     if session:
@@ -2195,7 +2198,7 @@ def handle_message(message: Dict, conn) -> None:
             order_id = cursor.fetchone()[0]
             conn.commit()
             
-            cursor.execute(f"DELETE FROM {SCHEMA}.chat_sessions WHERE telegram_id = %s", (telegram_id,))
+            cursor.execute(f"DELETE FROM {SCHEMA}.order_draft WHERE telegram_id = %s", (telegram_id,))
             conn.commit()
             
             cursor.execute(f"SELECT telegram_id FROM {SCHEMA}.users WHERE role = %s", ('courier',))
