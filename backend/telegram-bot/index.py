@@ -2185,7 +2185,7 @@ def handle_message(message: Dict, conn) -> None:
                 cursor.close()
                 return
             
-            order_data = json.loads(order_data_json) if order_data_json else {}
+            order_data = order_data_json if order_data_json else {}
             bag_count = order_data.get('bag_count', 1)
             is_subscription = order_data.get('is_subscription', False)
             total_price = order_data.get('price', BAG_PRICE * bag_count)
