@@ -2378,7 +2378,7 @@ def handle_message(message: Dict, conn) -> None:
             order_data = order_data_json if order_data_json else {}
             bag_count = order_data.get('bag_count', 1)
             is_subscription = order_data.get('is_subscription', False)
-            total_price = order_data.get('price', BAG_PRICE * bag_count)
+            total_price = order_data.get('price', get_bag_price(conn) * bag_count)
             
             cursor.execute(
                 f"INSERT INTO {SCHEMA}.orders (client_id, address, description, price, status, detailed_status, bag_count, is_subscription_order, payment_status) "
