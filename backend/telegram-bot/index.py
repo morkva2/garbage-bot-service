@@ -186,7 +186,6 @@ def get_client_menu_keyboard() -> Dict:
             [{'text': '➕ Сделать заказ', 'callback_data': 'client_new_order'}],
             [{'text': '📦 Активные заказы', 'callback_data': 'client_active'}],
             [{'text': '📊 История заказов', 'callback_data': 'client_history'}],
-            [{'text': '💳 Способ оплаты', 'callback_data': 'client_payment'}],
             [{'text': '💬 Связаться с поддержкой', 'url': 'https://t.me/support'}],
             [{'text': '⭐ Подписка', 'callback_data': 'client_subscription'}],
             [{'text': '⬅️ Назад', 'callback_data': 'start'}]
