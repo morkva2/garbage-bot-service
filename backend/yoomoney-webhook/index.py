@@ -5,7 +5,7 @@ from typing import Dict, Any
 
 SCHEMA = 't_p39739760_garbage_bot_service'
 
-def send_telegram_message(chat_id: int, text: str):
+def send_telegram_message(chat_id: int, text: str, reply_markup: str = None):
     '''Отправка сообщения через Telegram Bot API'''
     import requests
     
@@ -19,6 +19,9 @@ def send_telegram_message(chat_id: int, text: str):
         'text': text,
         'parse_mode': 'HTML'
     }
+    
+    if reply_markup:
+        data['reply_markup'] = reply_markup
     
     try:
         requests.post(url, json=data, timeout=5)
@@ -113,7 +116,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "Теперь вы можете заказывать вывоз до 2 пакетов без доплаты!"
                 )
                 
-                send_telegram_message(client_id, message)
+                keyboard = json.dumps({
+                    'inline_keyboard': [
+                        [{'text': '➕ Новый заказ', 'callback_data': 'client_new_order'}],
+                        [{'text': '⬅️ Главное меню', 'callback_data': 'client_menu'}]
+                    ]
+                })
+                
+                send_telegram_message(client_id, message, keyboard)
         else:
             cursor.execute(
                 f"UPDATE {SCHEMA}.orders SET payment_status = %s, paid_at = NOW(), detailed_status = %s WHERE id = %s RETURNING client_id, address, bag_count, price",
@@ -130,7 +140,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 message += f"📍 Адрес: {address}\n\n"
                 message += "Курьер скоро свяжется с вами для согласования времени вывоза."
                 
-                send_telegram_message(client_id, message)
+                keyboard = json.dumps({
+                    'inline_keyboard': [
+                        [{'text': '📦 Мои заказы', 'callback_data': 'client_active_orders'}],
+                        [{'text': '⬅️ Главное меню', 'callback_data': 'client_menu'}]
+                    ]
+                })
+                
+                send_telegram_message(client_id, message, keyboard)
                 
                 cursor.execute(
                     f"SELECT telegram_id FROM {SCHEMA}.users WHERE role = %s",
