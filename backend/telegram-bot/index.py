@@ -1316,31 +1316,84 @@ def handle_client_payment(chat_id: int) -> None:
     smart_send_message(chat_id, text, keyboard)
 
 def handle_buy_subscription(chat_id: int, telegram_id: int, sub_type: str, conn) -> None:
+    from datetime import timedelta
+    import requests
+    
     price = 2499 if sub_type == 'daily' else 1399
     sub_name = "Каждый день" if sub_type == 'daily' else "Через день"
     
+    cursor = conn.cursor()
+    
+    start_date = datetime.now().date()
+    end_date = start_date + timedelta(days=30)
+    
+    cursor.execute(
+        f"INSERT INTO {SCHEMA}.subscriptions (client_id, type, price, start_date, end_date, is_active, payment_status) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (telegram_id, sub_type, price, start_date, end_date, False, 'pending')
+    )
+    subscription_id = cursor.fetchone()[0]
+    conn.commit()
+    
     text = (
-        f"⭐ <b>Заявка на подписку '{sub_name}'</b>\n\n"
+        f"⭐ <b>Оформление подписки '{sub_name}'</b>\n\n"
         f"💰 Стоимость: {price}₽ в месяц\n\n"
         "📋 Что входит:\n"
         "• Вывоз до 2 пакетов в день\n"
         "• Без дополнительных платежей\n\n"
-        "Свяжитесь с администратором для оплаты:"
+        "Создаём платёж..."
     )
+    smart_send_message(chat_id, text)
     
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT u.telegram_id, u.first_name FROM {SCHEMA}.admin_users au JOIN {SCHEMA}.users u ON au.telegram_id = u.telegram_id LIMIT 1")
-    admin = cursor.fetchone()
+    try:
+        payment_response = requests.post(
+            'https://functions.poehali.dev/b4b440af-a2f4-4b49-86be-5c7dafb0762d',
+            json={
+                'amount': price,
+                'description': f"Подписка #{subscription_id}: {sub_name} (30 дней)",
+                'order_id': f"sub_{subscription_id}"
+            },
+            timeout=10
+        )
+        
+        if payment_response.status_code == 200:
+            payment_data = payment_response.json()
+            payment_url = payment_data.get('payment_url')
+            payment_id = payment_data.get('payment_id')
+            
+            cursor.execute(
+                f"UPDATE {SCHEMA}.subscriptions SET payment_id = %s, payment_url = %s WHERE id = %s",
+                (payment_id, payment_url, subscription_id)
+            )
+            conn.commit()
+            
+            text = (
+                f"💳 <b>Оплата подписки '{sub_name}'</b>\n\n"
+                f"💰 Сумма: {price}₽\n"
+                f"📅 Срок: 30 дней\n\n"
+                "Нажмите кнопку ниже для оплаты:"
+            )
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '💳 Оплатить подписку', 'url': payment_url}],
+                    [{'text': '❌ Отменить', 'callback_data': 'client_subscription'}]
+                ]
+            }
+            smart_send_message(chat_id, text, keyboard)
+        else:
+            cursor.execute(f"DELETE FROM {SCHEMA}.subscriptions WHERE id = %s", (subscription_id,))
+            conn.commit()
+            text = "❌ Ошибка при создании платежа. Попробуйте позже."
+            keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_subscription'}]]}
+            smart_send_message(chat_id, text, keyboard)
+    except Exception as e:
+        cursor.execute(f"DELETE FROM {SCHEMA}.subscriptions WHERE id = %s", (subscription_id,))
+        conn.commit()
+        text = "❌ Ошибка при создании платежа. Попробуйте позже."
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'client_subscription'}]]}
+        smart_send_message(chat_id, text, keyboard)
+    
     cursor.close()
-    
-    keyboard = {
-        'inline_keyboard': [
-            [{'text': '👑 Связаться с администратором', 'url': f'https://t.me/user?id={admin[0]}' if admin else 'https://t.me/support'}],
-            [{'text': '❌ Отменить', 'callback_data': 'client_subscription'}]
-        ]
-    }
-    
-    smart_send_message(chat_id, text, keyboard)
 
 def handle_client_subscription(chat_id: int, telegram_id: int, conn) -> None:
     cursor = conn.cursor()

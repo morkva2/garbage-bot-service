@@ -92,51 +92,74 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         conn = psycopg2.connect(dsn)
         cursor = conn.cursor()
         
-        cursor.execute(
-            f"UPDATE {SCHEMA}.orders SET payment_status = %s, paid_at = NOW(), detailed_status = %s WHERE id = %s RETURNING client_id, address, bag_count, price",
-            (payment_status, 'searching_courier', order_id)
-        )
-        result = cursor.fetchone()
-        
-        if result:
-            client_id, address, bag_count, price = result
-            
-            message = f"✅ <b>Оплата прошла успешно!</b>\n\n"
-            message += f"📦 Заказ #{order_id}\n"
-            message += f"🗑 Мешков: {bag_count}\n"
-            message += f"📍 Адрес: {address}\n\n"
-            message += "Курьер скоро свяжется с вами для согласования времени вывоза."
-            
-            send_telegram_message(client_id, message)
+        if order_id.startswith('sub_'):
+            subscription_id = int(order_id.replace('sub_', ''))
             
             cursor.execute(
-                f"SELECT telegram_id FROM {SCHEMA}.users WHERE role = %s",
-                ('courier',)
+                f"UPDATE {SCHEMA}.subscriptions SET payment_status = %s, paid_at = NOW(), is_active = %s "
+                f"WHERE id = %s RETURNING client_id, type, end_date",
+                (payment_status, True, subscription_id)
             )
-            couriers = cursor.fetchall()
+            sub_result = cursor.fetchone()
             
-            notification_keyboard_json = json.dumps({
-                'inline_keyboard': [
-                    [{'text': '✅ Принять', 'callback_data': f'accept_order_{order_id}'}]
-                ]
-            })
-            
-            for courier in couriers:
-                courier_id = courier[0]
+            if sub_result:
+                client_id, sub_type, end_date = sub_result
+                sub_name = "Ежедневно" if sub_type == 'daily' else "Через день"
                 
-                import requests
-                bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-                if bot_token:
-                    url = f'https://api.telegram.org/bot{bot_token}/sendMessage'
-                    data = {
-                        'chat_id': courier_id,
-                        'text': f"🆕 Новый заказ #{order_id}\n📍 {address}\n📦 {bag_count} мешков\n💰 {price} ₽",
-                        'reply_markup': notification_keyboard_json
-                    }
-                    try:
-                        requests.post(url, json=data, timeout=5)
-                    except Exception:
-                        pass
+                message = (
+                    f"✅ <b>Подписка активирована!</b>\n\n"
+                    f"⭐ Тип: {sub_name}\n"
+                    f"📅 Действует до: {end_date.strftime('%d.%m.%Y')}\n\n"
+                    "Теперь вы можете заказывать вывоз до 2 пакетов без доплаты!"
+                )
+                
+                send_telegram_message(client_id, message)
+        else:
+            cursor.execute(
+                f"UPDATE {SCHEMA}.orders SET payment_status = %s, paid_at = NOW(), detailed_status = %s WHERE id = %s RETURNING client_id, address, bag_count, price",
+                (payment_status, 'searching_courier', order_id)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                client_id, address, bag_count, price = result
+                
+                message = f"✅ <b>Оплата прошла успешно!</b>\n\n"
+                message += f"📦 Заказ #{order_id}\n"
+                message += f"🗑 Мешков: {bag_count}\n"
+                message += f"📍 Адрес: {address}\n\n"
+                message += "Курьер скоро свяжется с вами для согласования времени вывоза."
+                
+                send_telegram_message(client_id, message)
+                
+                cursor.execute(
+                    f"SELECT telegram_id FROM {SCHEMA}.users WHERE role = %s",
+                    ('courier',)
+                )
+                couriers = cursor.fetchall()
+                
+                notification_keyboard_json = json.dumps({
+                    'inline_keyboard': [
+                        [{'text': '✅ Принять', 'callback_data': f'accept_order_{order_id}'}]
+                    ]
+                })
+                
+                for courier in couriers:
+                    courier_id = courier[0]
+                    
+                    import requests
+                    bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+                    if bot_token:
+                        url = f'https://api.telegram.org/bot{bot_token}/sendMessage'
+                        data = {
+                            'chat_id': courier_id,
+                            'text': f"🆕 Новый заказ #{order_id}\n📍 {address}\n📦 {bag_count} мешков\n💰 {price} ₽",
+                            'reply_markup': notification_keyboard_json
+                        }
+                        try:
+                            requests.post(url, json=data, timeout=5)
+                        except Exception:
+                            pass
         
         conn.commit()
         cursor.close()
