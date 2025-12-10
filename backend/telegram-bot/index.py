@@ -604,6 +604,108 @@ def handle_client_new_order(chat_id: int, conn) -> None:
     keyboard = {'inline_keyboard': keyboard_buttons}
     smart_send_message(chat_id, text, keyboard)
 
+def handle_time_selection(chat_id: int, telegram_id: int, time_slot: str, conn) -> None:
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT state, order_data FROM {SCHEMA}.order_draft WHERE telegram_id = %s", (telegram_id,))
+    session = cursor.fetchone()
+    
+    if not session or session[0] != 'waiting_time':
+        cursor.close()
+        send_message(chat_id, "❌ Сессия истекла. Создайте заказ заново.")
+        return
+    
+    state, order_data_json = session
+    order_data = order_data_json if order_data_json else {}
+    
+    time_names = {
+        'morning': '🌅 Утро (8:00 - 12:00)',
+        'day': '☀️ День (12:00 - 16:00)',
+        'evening': '🌆 Вечер (16:00 - 20:00)',
+        'night': '🌙 Ночь (20:00 - 23:00)',
+        'asap': '⏰ Как можно скорее'
+    }
+    
+    preferred_time = time_names.get(time_slot, 'Не указано')
+    
+    address = order_data.get('address', '')
+    bag_count = order_data.get('bag_count', 1)
+    is_subscription = order_data.get('is_subscription', False)
+    total_price = order_data.get('price', get_bag_price(conn) * bag_count)
+    
+    cursor.execute(
+        f"INSERT INTO {SCHEMA}.orders (client_id, address, description, price, status, detailed_status, bag_count, is_subscription_order, payment_status, preferred_time) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (telegram_id, address, f"Вывоз мусора ({bag_count} пакетов)", total_price, 'pending', 'waiting_payment', bag_count, is_subscription, 'pending', preferred_time)
+    )
+    order_id = cursor.fetchone()[0]
+    conn.commit()
+    
+    cursor.execute(f"DELETE FROM {SCHEMA}.order_draft WHERE telegram_id = %s", (telegram_id,))
+    conn.commit()
+    cursor.close()
+    
+    try:
+        import requests
+        payment_response = requests.post(
+            'https://functions.poehali.dev/b4b440af-a2f4-4b49-86be-5c7dafb0762d',
+            json={
+                'order_id': order_id,
+                'amount': total_price,
+                'description': f'Заказ #{order_id}: {bag_count} пакетов'
+            },
+            timeout=10
+        )
+        
+        if payment_response.status_code == 200:
+            payment_data = payment_response.json()
+            payment_url = payment_data.get('payment_url')
+            
+            if is_subscription:
+                text = (
+                    f"✅ <b>Заказ #{order_id} создан!</b>\n\n"
+                    f"📦 Количество: {bag_count} пакетов\n"
+                    f"📍 Адрес: {address}\n"
+                    f"🕐 Время: {preferred_time}\n"
+                    f"💰 По подписке: 0 ₽\n\n"
+                    "🔍 Курьер скоро увидит ваш заказ"
+                )
+                keyboard = {
+                    'inline_keyboard': [
+                        [{'text': '📦 Мои заказы', 'callback_data': 'client_active'}],
+                        [{'text': '⬅️ Главное меню', 'callback_data': 'client_menu'}]
+                    ]
+                }
+                
+                cursor = conn.cursor()
+                cursor.execute(
+                    f"UPDATE {SCHEMA}.orders SET detailed_status = %s WHERE id = %s",
+                    ('searching_courier', order_id)
+                )
+                conn.commit()
+                cursor.close()
+            else:
+                text = (
+                    f"✅ <b>Заказ #{order_id} создан!</b>\n\n"
+                    f"📦 Количество: {bag_count} пакетов\n"
+                    f"📍 Адрес: {address}\n"
+                    f"🕐 Время: {preferred_time}\n"
+                    f"💰 Стоимость: {total_price} ₽\n\n"
+                    "Пожалуйста, оплатите заказ:"
+                )
+                keyboard = {
+                    'inline_keyboard': [
+                        [{'text': '💳 Оплатить', 'url': payment_url}],
+                        [{'text': '❌ Отменить заказ', 'callback_data': f'cancel_order_{order_id}'}]
+                    ]
+                }
+            
+            smart_send_message(chat_id, text, keyboard)
+        else:
+            send_message(chat_id, "❌ Ошибка создания платежа. Попробуйте позже")
+    except Exception as e:
+        print(f"Payment error: {e}")
+        send_message(chat_id, "❌ Ошибка создания платежа")
+
 def handle_select_bags(chat_id: int, telegram_id: int, bag_count: int, conn) -> None:
     from datetime import timedelta
     
@@ -2185,6 +2287,9 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data == 'change_alternate_price':
         if role == 'admin':
             handle_change_price_prompt(chat_id, 'alternate', conn)
+    elif data.startswith('time_'):
+        time_slot = data.replace('time_', '')
+        handle_time_selection(chat_id, telegram_id, time_slot, conn)
     
     _context.message_id = None
 
@@ -2376,21 +2481,37 @@ def handle_message(message: Dict, conn) -> None:
                 return
             
             order_data = order_data_json if order_data_json else {}
-            bag_count = order_data.get('bag_count', 1)
-            is_subscription = order_data.get('is_subscription', False)
-            total_price = order_data.get('price', get_bag_price(conn) * bag_count)
+            order_data['address'] = address
             
             cursor.execute(
-                f"INSERT INTO {SCHEMA}.orders (client_id, address, description, price, status, detailed_status, bag_count, is_subscription_order, payment_status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                (telegram_id, address, f"Вывоз мусора ({bag_count} пакетов)", total_price, 'pending', 'waiting_payment', bag_count, is_subscription, 'pending')
+                f"UPDATE {SCHEMA}.order_draft SET state = %s, order_data = %s WHERE telegram_id = %s",
+                ('waiting_time', json.dumps(order_data), telegram_id)
             )
-            order_id = cursor.fetchone()[0]
-            conn.commit()
-            
-            cursor.execute(f"DELETE FROM {SCHEMA}.order_draft WHERE telegram_id = %s", (telegram_id,))
             conn.commit()
             cursor.close()
+            
+            text = (
+                "🕐 <b>Выберите удобное время:</b>\n\n"
+                "Когда удобно забрать мусор?"
+            )
+            
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '🌅 Утро (8:00 - 12:00)', 'callback_data': 'time_morning'}],
+                    [{'text': '☀️ День (12:00 - 16:00)', 'callback_data': 'time_day'}],
+                    [{'text': '🌆 Вечер (16:00 - 20:00)', 'callback_data': 'time_evening'}],
+                    [{'text': '🌙 Ночь (20:00 - 23:00)', 'callback_data': 'time_night'}],
+                    [{'text': '⏰ Как можно скорее', 'callback_data': 'time_asap'}],
+                    [{'text': '❌ Отмена', 'callback_data': 'client_menu'}]
+                ]
+            }
+            smart_send_message(chat_id, text, keyboard)
+            return
+        
+        elif state == 'waiting_time':
+            cursor.close()
+            send_message(chat_id, "⚠️ Пожалуйста, используйте кнопки для выбора времени")
+            return
             
             try:
                 import requests
