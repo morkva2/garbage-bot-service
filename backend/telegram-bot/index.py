@@ -53,7 +53,11 @@ def handler(event: dict, context) -> dict:
         }
         
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         print(f"Error processing update: {e}")
+        print(f"Full traceback: {error_details}")
+        print(f"Update body: {json.dumps(body, ensure_ascii=False)}")
         return {
             'statusCode': 200,
             'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
