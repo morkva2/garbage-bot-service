@@ -111,6 +111,7 @@ class TelegramBot:
             self.handle_callback(update['callback_query'])
     
     def handle_message(self, message: dict):
+        print(f"[DEBUG] Handling message: {json.dumps(message, ensure_ascii=False)}")
         chat_id = message['chat']['id']
         user = message.get('from', {})
         text = message.get('text', '')
@@ -119,13 +120,18 @@ class TelegramBot:
         username = user.get('username', '')
         first_name = user.get('first_name', '')
         
+        print(f"[DEBUG] User: {telegram_id}, text: {text}")
+        
         db_user = self.get_or_create_user(telegram_id, username, first_name)
+        print(f"[DEBUG] DB user: {db_user}")
         
         if db_user and db_user[6]:  # is_frozen
+            print(f"[DEBUG] User is frozen")
             self.send_message(chat_id, "❄️ Ваш аккаунт заморожен. Обратитесь к администратору.")
             return
         
         if text == '/start':
+            print(f"[DEBUG] Showing main menu, role: {db_user[4]}")
             self.show_main_menu(chat_id, db_user[4])  # role
         elif text == '/menu':
             self.show_main_menu(chat_id, db_user[4])
@@ -389,6 +395,9 @@ class TelegramBot:
     def send_message(self, chat_id: int, text: str, reply_markup: dict = None):
         import urllib.request
         import urllib.parse
+        import traceback
+        
+        print(f"[DEBUG] Sending message to {chat_id}: {text[:50]}...")
         
         data = {
             'chat_id': chat_id,
@@ -403,9 +412,12 @@ class TelegramBot:
         req = urllib.request.Request(f"{self.api_url}/sendMessage", data=encoded_data)
         
         try:
-            urllib.request.urlopen(req)
+            response = urllib.request.urlopen(req)
+            result = response.read().decode('utf-8')
+            print(f"[DEBUG] Message sent successfully: {result}")
         except Exception as e:
-            print(f"Error sending message: {e}")
+            print(f"[ERROR] Error sending message: {e}")
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
     
     def answer_callback_query(self, callback_id: str):
         import urllib.request
