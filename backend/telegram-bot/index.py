@@ -647,7 +647,7 @@ def handle_time_selection(chat_id: int, telegram_id: int, time_slot: str, conn) 
     try:
         import requests
         payment_response = requests.post(
-            'https://functions.poehali.dev/b4b440af-a2f4-4b49-86be-5c7dafb0762d',
+            'https://functions.poehali.dev/b0e9d993-5a3b-4a63-892c-1148d0d2b71f',
             json={
                 'order_id': order_id,
                 'amount': total_price,
@@ -1547,7 +1547,7 @@ def handle_buy_subscription(chat_id: int, telegram_id: int, sub_type: str, conn)
     
     try:
         payment_response = requests.post(
-            'https://functions.poehali.dev/b4b440af-a2f4-4b49-86be-5c7dafb0762d',
+            'https://functions.poehali.dev/b0e9d993-5a3b-4a63-892c-1148d0d2b71f',
             json={
                 'amount': price,
                 'description': f"Подписка #{subscription_id}: {sub_name} (30 дней)",
