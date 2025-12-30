@@ -1,5 +1,4 @@
 {
-  "bot-debug": "https://functions.poehali.dev/3e2b9d09-eef6-41f0-9006-0b8b915809f3",
   "telegram-bot": "https://functions.poehali.dev/63e313ed-c4e7-40e4-baa0-e78c7b2a8391",
   "cancel-unpaid-orders": "https://functions.poehali.dev/cafef774-4b0c-4402-8833-b5351249e0f6",
   "yoomoney-webhook": "https://functions.poehali.dev/cc2d0d2c-5f75-4329-b8f9-c25ef4fae5b5",
