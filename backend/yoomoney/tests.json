@@ -1,0 +1,33 @@
+{
+  "tests": [
+    {
+      "name": "Create payment test",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "amount": 100,
+        "order_id": "test_123",
+        "description": "Test payment"
+      },
+      "expectedStatus": 200,
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Webhook processing test",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "event": "payment.succeeded",
+        "object": {
+          "id": "test_payment_id",
+          "status": "succeeded",
+          "metadata": {
+            "order_id": "123"
+          }
+        }
+      },
+      "expectedStatus": 200,
+      "bodyMatcher": "partial"
+    }
+  ]
+}
