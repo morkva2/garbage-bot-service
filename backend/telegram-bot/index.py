@@ -1110,6 +1110,7 @@ def handle_admin_panel(chat_id: int, conn) -> None:
             [{'text': '💰 Настройка цен', 'callback_data': 'admin_prices'}],
             [{'text': '📊 Статистика сервиса', 'callback_data': 'admin_stats'}],
             [{'text': '📦 Все заказы', 'callback_data': 'admin_all_orders'}],
+            [{'text': '🗑 Очистить данные', 'callback_data': 'admin_clear_data'}],
             [{'text': '⬅️ Назад', 'callback_data': 'start'}]
         ]
     }
@@ -2102,6 +2103,59 @@ def handle_admin_all_orders(chat_id: int, conn) -> None:
     
     smart_send_message(chat_id, text, keyboard)
 
+def handle_admin_clear_data_confirm(chat_id: int) -> None:
+    text = (
+        "⚠️ <b>Очистка данных</b>\n\n"
+        "Вы уверены, что хотите очистить:\n\n"
+        "• Все заказы\n"
+        "• Чаты заказов\n"
+        "• Статистику курьеров\n"
+        "• Все подписки\n\n"
+        "❗️ Пользователи, курьеры и операторы НЕ будут удалены\n\n"
+        "Это действие необратимо!"
+    )
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '✅ Да, очистить', 'callback_data': 'admin_clear_data_yes'}],
+            [{'text': '❌ Отмена', 'callback_data': 'admin_panel'}]
+        ]
+    }
+    smart_send_message(chat_id, text, keyboard)
+
+def handle_admin_clear_data(chat_id: int, conn) -> None:
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f"DELETE FROM {SCHEMA}.order_chat")
+        cursor.execute(f"DELETE FROM {SCHEMA}.order_chat_archive")
+        cursor.execute(f"DELETE FROM {SCHEMA}.chat_sessions")
+        cursor.execute(f"DELETE FROM {SCHEMA}.order_draft")
+        cursor.execute(f"DELETE FROM {SCHEMA}.orders")
+        cursor.execute(f"DELETE FROM {SCHEMA}.ratings")
+        cursor.execute(f"DELETE FROM {SCHEMA}.courier_stats")
+        cursor.execute(f"DELETE FROM {SCHEMA}.subscriptions")
+        
+        conn.commit()
+        cursor.close()
+        
+        text = (
+            "✅ <b>Данные успешно очищены</b>\n\n"
+            "Удалено:\n"
+            "• Все заказы\n"
+            "• Чаты заказов\n"
+            "• Статистика курьеров\n"
+            "• Все подписки\n\n"
+            "Пользователи, курьеры и операторы сохранены."
+        )
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]]}
+        smart_send_message(chat_id, text, keyboard)
+    except Exception as e:
+        conn.rollback()
+        cursor.close()
+        text = f"❌ Ошибка при очистке данных: {str(e)}"
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'admin_panel'}]]}
+        smart_send_message(chat_id, text, keyboard)
+
 def handle_callback_query(callback_query: Dict, conn) -> None:
     chat_id = callback_query['message']['chat']['id']
     message_id = callback_query['message']['message_id']
@@ -2165,6 +2219,12 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
     elif data == 'admin_all_orders':
         if role == 'admin':
             handle_admin_all_orders(chat_id, conn)
+    elif data == 'admin_clear_data':
+        if role == 'admin':
+            handle_admin_clear_data_confirm(chat_id)
+    elif data == 'admin_clear_data_yes':
+        if role == 'admin':
+            handle_admin_clear_data(chat_id, conn)
     elif data == 'admin_subscriptions':
         if role == 'admin':
             handle_admin_subscriptions(chat_id, conn)
