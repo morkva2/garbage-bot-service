@@ -334,7 +334,7 @@ def handle_courier_available_orders(chat_id: int, telegram_id: int, conn) -> Non
     
     if not orders:
         text = "📦 <b>Доступные заказы</b>\n\nНет доступных заказов"
-        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'start'}]]}
+        keyboard = {'inline_keyboard': [[{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}]]}
         smart_send_message(chat_id, text, keyboard)
         return
     
@@ -351,8 +351,8 @@ def handle_courier_available_orders(chat_id: int, telegram_id: int, conn) -> Non
         text += f"Статус: {status_text}\n\n"
         keyboard_buttons.append([{'text': f'✅ Принять #{order_id}', 'callback_data': f'accept_order_{order_id}'}])
     
-    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'start'}])
-    send_message(chat_id, text, {'inline_keyboard': keyboard_buttons})
+    keyboard_buttons.append([{'text': '⬅️ Назад', 'callback_data': 'courier_menu'}])
+    smart_send_message(chat_id, text, {'inline_keyboard': keyboard_buttons})
 
 def handle_accept_order(chat_id: int, telegram_id: int, order_id: int, conn) -> None:
     cursor = conn.cursor()
@@ -2126,6 +2126,10 @@ def handle_callback_query(callback_query: Dict, conn) -> None:
         handle_courier_current_orders(chat_id, telegram_id, conn)
     elif data == 'courier_stats':
         handle_courier_stats(chat_id, telegram_id, conn)
+    elif data == 'courier_menu':
+        if role == 'courier':
+            from keyboards import get_courier_menu_keyboard
+            smart_send_message(chat_id, "👔 <b>Меню курьера</b>\n\nВыберите действие:", get_courier_menu_keyboard())
 
     elif data == 'client_new_order':
         handle_client_new_order(chat_id, conn)
